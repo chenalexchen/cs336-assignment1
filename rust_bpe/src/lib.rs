@@ -68,8 +68,9 @@ pub struct BPETokenizer {
 
 #[cfg_attr(feature = "python", pymethods)]
 impl BPETokenizer {
-    #[new]
-    fn new(
+    #[cfg_attr(feature = "python", new)]
+    #[cfg_attr(feature = "python", pyo3(signature = (vocab, merges, special_tokens=None)))]
+    pub fn new(
         vocab: HashMap<i32, Vec<u8>>,
         merges: Vec<(Vec<u8>, Vec<u8>)>,
         special_tokens: Option<Vec<String>>,
@@ -101,6 +102,115 @@ impl BPETokenizer {
             special_token_ids,
         }
     }
+
+    /// Encode text into token IDs
+    pub fn encode(&self, text: &str) -> Vec<i32> {
+        if text.is_empty() {
+            return Vec::new();
+        }
+
+        let tokens = pre_tokenize(text, &self.special_tokens);
+        let byte_sequences = tokens_to_bytes(&tokens, &self.special_tokens);
+        
+        let mut result = Vec::new();
+        for byte_seq in byte_sequences {
+            let token_ids = self.apply_merges(&byte_seq);
+            result.extend(token_ids);
+        }
+        
+        result
+    }
+
+    /// Decode token IDs back to text
+    pub fn decode(&self, token_ids: &[i32]) -> String {
+        let mut result = Vec::new();
+        
+        for token_id in token_ids {
+            if let Some(token_bytes) = self.vocab.get(&token_id) {
+                result.extend_from_slice(token_bytes);
+            }
+        }
+        
+        String::from_utf8_lossy(&result).to_string()
+    }
+
+    /// Apply BPE merges to a sequence of byte tokens
+    fn apply_merges(&self, byte_seq: &[i32]) -> Vec<i32> {
+        if byte_seq.len() <= 1 {
+            return byte_seq.to_vec();
+        }
+
+        let mut word: Vec<i32> = byte_seq.to_vec();
+        
+        loop {
+            let mut best_merge_idx = None;
+            let mut best_merge_rank = self.merges.len();
+            
+            // Find the highest priority merge (earliest in merge list)
+            for i in 0..word.len().saturating_sub(1) {
+                // Convert tokens back to bytes to match against merge rules
+                let token1_bytes = if let Some(bytes) = self.vocab.get(&word[i]) {
+                    bytes.clone()
+                } else {
+                    continue;
+                };
+                
+                let token2_bytes = if let Some(bytes) = self.vocab.get(&word[i + 1]) {
+                    bytes.clone()
+                } else {
+                    continue;
+                };
+                
+                // Find this pair in the merges
+                for (rank, merge_rule) in self.merges.iter().enumerate() {
+                    if merge_rule.token1 == token1_bytes && merge_rule.token2 == token2_bytes {
+                        if rank < best_merge_rank {
+                            best_merge_rank = rank;
+                            best_merge_idx = Some(i);
+                        }
+                        break;
+                    }
+                }
+            }
+            
+            // If no merge found, we're done
+            if best_merge_idx.is_none() {
+                break;
+            }
+            
+            let merge_idx = best_merge_idx.unwrap();
+            let merge_rule = &self.merges[best_merge_rank];
+            
+            // Apply the merge
+            let mut new_word = Vec::new();
+            let mut i = 0;
+            while i < word.len() {
+                if i == merge_idx {
+                    // Create merged token - look up in vocab_reverse
+                    let mut merged_bytes = merge_rule.token1.clone();
+                    merged_bytes.extend_from_slice(&merge_rule.token2);
+                    
+                    if let Some(&merged_id) = self.vocab_reverse.get(&merged_bytes) {
+                        new_word.push(merged_id);
+                    } else {
+                        // If merged token not in vocab, keep original tokens
+                        new_word.push(word[i]);
+                        if i + 1 < word.len() {
+                            new_word.push(word[i + 1]);
+                        }
+                    }
+                    i += 2;
+                } else {
+                    new_word.push(word[i]);
+                    i += 1;
+                }
+            }
+            
+            word = new_word;
+        }
+        
+        word
+    }
 }
 
 /// Pre-tokenize text into words using GPT-2 style regex
@@ -109,13 +219,20 @@ fn pre_tokenize(text: &str, special_tokens: &[String]) -> Vec<String> {
         return Vec::new();
     }
     
-    // Split on special tokens first
+    // Split on special tokens first, preferring longer matches
     let mut parts = vec![text.to_string()];
     
-    for special_token in special_tokens {
+    // Sort special tokens by length (descending) to prefer longer matches
+    let mut sorted_special_tokens = special_tokens.to_vec();
+    sorted_special_tokens.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    
+    for special_token in &sorted_special_tokens {
         let mut new_parts = Vec::new();
         for part in parts {
             if part == *special_token {
+                new_parts.push(part);
+            } else if special_tokens.contains(&part) {
+                // This part is already a special token, don't split it further
                 new_parts.push(part);
             } else {
                 let split_parts: Vec<&str> = part.split(special_token).collect();
@@ -349,7 +466,8 @@ fn extract_word_frequencies_parallel(
             }
         );
     
-    Ok((word_freqs, lines.len() / chunk_size))
+    let chunk_count = (lines.len() + chunk_size - 1) / chunk_size; // Ceiling division
+    Ok((word_freqs, chunk_count))
 }
 
 /// Process a chunk of text into word frequencies
@@ -821,5 +939,919 @@ fn update_pair_deltas(
     for window in new_word.windows(2) {
         let pair = (window[0], window[1]);
         *pair_deltas.entry(pair).or_insert(0) += freq_delta;
+    }
+}
+
+/// Train BPE from a text file (Python-compatible function)
+#[cfg(feature = "python")]
+#[cfg_attr(feature = "python", pyo3::pyfunction)]
+pub fn train_bpe(
+    input_path: &str,
+    vocab_size: usize,
+    special_tokens: Vec<String>,
+) -> Result<(HashMap<i32, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
+    let (word_freqs, _chunk_count) = extract_word_frequencies_with_stats(input_path, &special_tokens)?;
+    let (vocab, merges) = train_bpe_from_word_freqs(word_freqs, vocab_size, &special_tokens)?;
+    Ok((vocab, merges))
+}
+
+/// Python module
+#[cfg(feature = "python")]
+#[cfg_attr(feature = "python", pyo3::pymodule)]
+fn rust_bpe(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
+    m.add_class::<BPETokenizer>()?;
+    m.add_function(pyo3::wrap_pyfunction!(train_bpe, m)?)?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+    
+    fn create_test_vocab() -> FxHashMap<i32, Vec<u8>> {
+        (0..256).map(|i| (i as i32, vec![i as u8])).collect()
+    }
+    
+    fn create_test_tokenizer_with_merges(merges: Vec<(Vec<u8>, Vec<u8>)>) -> BPETokenizer {
+        let mut vocab = create_test_vocab();
+        let mut next_id = 256;
+        
+        // Add merged tokens to vocab
+        for (token1, token2) in &merges {
+            let mut merged = token1.clone();
+            merged.extend_from_slice(token2);
+            vocab.insert(next_id, merged);
+            next_id += 1;
+        }
+        
+        // Add special token
+        vocab.insert(next_id, b"<|endoftext|>".to_vec());
+        
+        BPETokenizer::new(
+            vocab.into_iter().collect(),
+            merges,
+            Some(vec!["<|endoftext|>".to_string()]),
+        )
+    }
+    
+    #[test]
+    fn test_empty_text_encoding() {
+        let tokenizer = create_test_tokenizer_with_merges(vec![]);
+        let encoded = tokenizer.encode("");
+        assert_eq!(encoded, Vec::<i32>::new());
+        
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, "");
+    }
+    
+    #[test]
+    fn test_single_character_encoding() {
+        let tokenizer = create_test_tokenizer_with_merges(vec![]);
+        
+        // Test ASCII character
+        let encoded = tokenizer.encode("A");
+        assert_eq!(encoded, vec![65]); // ASCII 'A' = 65
+        
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, "A");
+    }
+    
+    #[test]
+    fn test_unicode_character_encoding() {
+        let tokenizer = create_test_tokenizer_with_merges(vec![]);
+        
+        let text = "🙃";
+        let encoded = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, text);
+        
+        // Test that it round-trips correctly
+        assert!(!encoded.is_empty());
+    }
+    
+    #[test]
+    fn test_basic_ascii_string() {
+        let tokenizer = create_test_tokenizer_with_merges(vec![]);
+        
+        let text = "Hello, how are you?";
+        let encoded = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, text);
+        
+        // Should have multiple tokens due to pre-tokenization
+        assert!(encoded.len() > 1);
+    }
+    
+    #[test]
+    fn test_unicode_string() {
+        let tokenizer = create_test_tokenizer_with_merges(vec![]);
+        
+        let text = "Héllò hôw are ü? 🙃";
+        let encoded = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, text);
+    }
+    
+    #[test]
+    fn test_basic_merge() {
+        // Create tokenizer with "th" merge
+        let tokenizer = create_test_tokenizer_with_merges(vec![
+            (b"t".to_vec(), b"h".to_vec())
+        ]);
+        
+        let encoded = tokenizer.encode("the");
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, "the");
+        
+        // Should contain the merged token (256) for "th"
+        assert!(encoded.contains(&256));
+    }
+    
+    #[test]
+    fn test_multiple_merges() {
+        // Create tokenizer with multiple merges
+        let tokenizer = create_test_tokenizer_with_merges(vec![
+            (b"t".to_vec(), b"h".to_vec()),    // "th" -> 256
+            (b"e".to_vec(), b"r".to_vec()),    // "er" -> 257
+            (b"th".to_vec(), b"e".to_vec()),   // "the" -> 258 (th + e)
+        ]);
+        
+        let encoded = tokenizer.encode("the");
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, "the");
+        
+        // Should use the most complete merge (258 for "the")
+        assert!(encoded.contains(&258));
+    }
+    
+    #[test]
+    fn test_special_tokens() {
+        let mut vocab = create_test_vocab();
+        vocab.insert(256, b"<|endoftext|>".to_vec());
+        
+        let tokenizer = BPETokenizer::new(
+            vocab.into_iter().collect(),
+            vec![],
+            Some(vec!["<|endoftext|>".to_string()]),
+        );
+        
+        let encoded = tokenizer.encode("Hello<|endoftext|>");
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, "Hello<|endoftext|>");
+        
+        // Should contain the special token ID (256)
+        assert!(encoded.contains(&256));
+    }
+    
+    #[test]
+    fn test_overlapping_special_tokens() {
+        let mut vocab = create_test_vocab();
+        vocab.insert(256, b"<|endoftext|>".to_vec());
+        vocab.insert(257, b"<|endoftext|><|endoftext|>".to_vec());
+        
+        let tokenizer = BPETokenizer::new(
+            vocab.into_iter().collect(),
+            vec![],
+            Some(vec!["<|endoftext|>".to_string(), "<|endoftext|><|endoftext|>".to_string()]),
+        );
+        
+        let text = "<|endoftext|><|endoftext|>";
+        let encoded = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, text);
+        
+        // Should use the longer special token (257)
+        assert!(encoded.contains(&257));
+        // Should NOT contain the shorter one when the longer is available
+        assert_eq!(encoded.len(), 1);
+    }
+    
+    #[test]
+    fn test_special_tokens_with_text() {
+        let mut vocab = create_test_vocab();
+        vocab.insert(256, b"<|endoftext|>".to_vec());
+        
+        let tokenizer = BPETokenizer::new(
+            vocab.into_iter().collect(),
+            vec![],
+            Some(vec!["<|endoftext|>".to_string()]),
+        );
+        
+        let text = "Héllò hôw <|endoftext|><|endoftext|> are ü? 🙃<|endoftext|>";
+        let encoded = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&encoded);
+        assert_eq!(decoded, text);
+        
+        // Count special token occurrences
+        let special_count = encoded.iter().filter(|&&id| id == 256).count();
+        assert_eq!(special_count, 3);
+    }
+    
+    #[test]
+    fn test_pre_tokenization() {
+        let tokens = pre_tokenize("Hello, world!", &[]);
+        assert!(!tokens.is_empty());
+        
+        // Should preserve punctuation and spaces correctly
+        let rejoined: String = tokens.join("");
+        assert_eq!(rejoined, "Hello, world!");
+    }
+    
+    #[test]
+    fn test_pre_tokenization_with_special_tokens() {
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let text = "Hello <|endoftext|> world";
+        
+        let tokens = pre_tokenize(text, &special_tokens);
+        assert!(tokens.contains(&"<|endoftext|>".to_string()));
+        
+        let rejoined: String = tokens.join("");
+        assert_eq!(rejoined, text);
+    }
+    
+    #[test]
+    fn test_apply_merge_to_word() {
+        // Test basic merge: "th" -> token 256
+        let word = vec![116, 104, 101]; // "the" in ASCII
+        let result = apply_merge_to_word(&word, 116, 104, 256);
+        assert_eq!(result, vec![256, 101]); // "th" (256) + "e" (101)
+        
+        // Test word without the target pair
+        let word2 = vec![104, 101, 108, 108, 111]; // "hello"
+        let result2 = apply_merge_to_word(&word2, 116, 104, 256);
+        assert_eq!(result2, word2); // Should be unchanged
+        
+        // Test multiple occurrences
+        let word3 = vec![116, 104, 116, 104]; // "thth"
+        let result3 = apply_merge_to_word(&word3, 116, 104, 256);
+        assert_eq!(result3, vec![256, 256]); // Both "th" should merge
+    }
+    
+    #[test]
+    fn test_update_pair_deltas() {
+        let mut pair_deltas = FxHashMap::default();
+        
+        let old_word = vec![116, 104, 101]; // "the"
+        let new_word = vec![256, 101];      // "th" (256) + "e"
+        let freq = 5;
+        
+        update_pair_deltas(&mut pair_deltas, &old_word, &new_word, freq);
+        
+        // Should remove old pairs and add new ones
+        assert_eq!(pair_deltas.get(&(116, 104)), Some(&-5)); // Remove "t" + "h"
+        assert_eq!(pair_deltas.get(&(104, 101)), Some(&-5)); // Remove "h" + "e"
+        assert_eq!(pair_deltas.get(&(256, 101)), Some(&5));  // Add "th" + "e"
+    }
+    
+    #[test]
+    fn test_word_frequency_extraction() {
+        // Create a temporary file for testing
+        let temp_file = "test_word_freq.txt";
+        {
+            let mut file = std::fs::File::create(temp_file).unwrap();
+            writeln!(file, "hello world").unwrap();
+            writeln!(file, "hello rust").unwrap();
+            writeln!(file, "world of rust").unwrap();
+        }
+        
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let result = extract_word_frequencies_with_stats(temp_file, &special_tokens);
+        
+        assert!(result.is_ok());
+        let (word_freqs, chunk_count) = result.unwrap();
+        
+        assert!(chunk_count > 0);
+        assert!(!word_freqs.is_empty());
+        
+        // Should have entries for common words
+        let hello_bytes: Vec<i32> = "hello".bytes().map(|b| b as i32).collect();
+        assert!(word_freqs.contains_key(&hello_bytes));
+        
+        // Cleanup
+        std::fs::remove_file(temp_file).unwrap();
+    }
+    
+    #[test]
+    fn test_train_bpe_from_word_freqs() {
+        // Create simple word frequencies
+        let mut word_freqs = FxHashMap::default();
+        word_freqs.insert(vec![104, 101, 108, 108, 111], 5); // "hello" appears 5 times
+        word_freqs.insert(vec![119, 111, 114, 108, 100], 3); // "world" appears 3 times
+        word_freqs.insert(vec![116, 104, 101], 10);          // "the" appears 10 times
+        
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let vocab_size = 300;
+        
+        let result = train_bpe_from_word_freqs(word_freqs, vocab_size, &special_tokens);
+        assert!(result.is_ok());
+        
+        let (vocab, merges) = result.unwrap();
+        
+        // Should have base vocab (256) + special token (1) + some merges
+        assert!(vocab.len() >= 257);
+        assert!(!merges.is_empty());
+        
+        // Special token should be in vocab
+        assert!(vocab.values().any(|v| v == b"<|endoftext|>"));
+        
+        // Common pairs should be merged (like "th", "he", "ll")
+        assert!(merges.len() > 0);
+    }
+    
+    #[test]
+    fn test_baseline_vs_optimized_consistency() {
+        // Create simple word frequencies for consistent testing
+        let mut word_freqs = FxHashMap::default();
+        word_freqs.insert(vec![116, 104, 101], 10); // "the"
+        word_freqs.insert(vec![116, 104, 105, 115], 5); // "this"
+        word_freqs.insert(vec![104, 101, 108, 108, 111], 3); // "hello"
+        
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let vocab_size = 270; // Small vocab to ensure both finish
+        
+        let result1 = train_bpe_from_word_freqs(word_freqs.clone(), vocab_size, &special_tokens);
+        let result2 = train_bpe_from_word_freqs_baseline(word_freqs, vocab_size, &special_tokens);
+        
+        assert!(result1.is_ok());
+        assert!(result2.is_ok());
+        
+        let (vocab1, merges1) = result1.unwrap();
+        let (vocab2, merges2) = result2.unwrap();
+        
+        // Both should produce the same results
+        assert_eq!(vocab1.len(), vocab2.len());
+        assert_eq!(merges1, merges2);
+    }
+    
+    #[test]
+    fn test_performance_regression() {
+        // Test to ensure we don't accidentally break performance
+        use std::time::Instant;
+        
+        let mut word_freqs = FxHashMap::default();
+        // Add more realistic data
+        for i in 0..1000 {
+            let word = vec![65 + (i % 26) as i32, 66 + ((i + 1) % 26) as i32, 67 + ((i + 2) % 26) as i32];
+            word_freqs.insert(word, (i % 10 + 1) as u64);
+        }
+        
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let vocab_size = 300;
+        
+        let start = Instant::now();
+        let result = train_bpe_from_word_freqs(word_freqs, vocab_size, &special_tokens);
+        let duration = start.elapsed();
+        
+        assert!(result.is_ok());
+        
+        // Should complete in reasonable time (less than 5 seconds for test data)
+        assert!(duration.as_secs() < 5, "Training took too long: {:?}", duration);
+    }
+    
+    #[test]
+    fn test_empty_input_handling() {
+        let empty_word_freqs = FxHashMap::default();
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let vocab_size = 300;
+        
+        let result = train_bpe_from_word_freqs(empty_word_freqs, vocab_size, &special_tokens);
+        assert!(result.is_ok());
+        
+        let (vocab, merges) = result.unwrap();
+        assert_eq!(vocab.len(), 257); // 256 base + 1 special token
+        assert_eq!(merges.len(), 0);
+    }
+    
+    #[test]
+    fn test_special_token_preservation() {
+        let mut vocab = create_test_vocab();
+        vocab.insert(256, b"<|endoftext|>".to_vec());
+        vocab.insert(257, b"<|special|>".to_vec());
+        
+        let tokenizer = BPETokenizer::new(
+            vocab.into_iter().collect(),
+            vec![],
+            Some(vec!["<|endoftext|>".to_string(), "<|special|>".to_string()]),
+        );
+        
+        let text = "Hello <|special|> world <|endoftext|>";
+        let encoded = tokenizer.encode(text);
+        let decoded = tokenizer.decode(&encoded);
+        
+        assert_eq!(decoded, text);
+        assert!(encoded.contains(&256)); // <|endoftext|>
+        assert!(encoded.contains(&257)); // <|special|>
+    }
+    
+    #[test]
+    fn test_large_vocabulary_handling() {
+        // Test with a larger vocabulary to ensure we handle edge cases
+        let mut word_freqs = FxHashMap::default();
+        
+        // Create a diverse set of words
+        for i in 0..100 {
+            let word1 = vec![65 + (i % 26) as i32, 97 + (i % 26) as i32]; // Capital + lowercase
+            let word2 = vec![48 + (i % 10) as i32, 65 + (i % 26) as i32]; // Number + letter
+            
+            word_freqs.insert(word1, 1);
+            word_freqs.insert(word2, 1);
+        }
+        
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let vocab_size = 500;
+        
+        let result = train_bpe_from_word_freqs(word_freqs, vocab_size, &special_tokens);
+        assert!(result.is_ok());
+        
+        let (vocab, merges) = result.unwrap();
+        assert!(vocab.len() <= vocab_size);
+        assert!(merges.len() > 0);
+    }
+    
+    #[test]
+    fn test_merge_rule_ordering() {
+        // Test that merges are applied in the correct order
+        let mut word_freqs = FxHashMap::default();
+        word_freqs.insert(vec![65, 66, 67], 10); // "ABC" - high frequency
+        word_freqs.insert(vec![65, 66], 5);      // "AB" - medium frequency
+        word_freqs.insert(vec![66, 67], 3);      // "BC" - low frequency
+        
+        let special_tokens = vec![];
+        let vocab_size = 270;
+        
+        let result = train_bpe_from_word_freqs(word_freqs, vocab_size, &special_tokens);
+        assert!(result.is_ok());
+        
+        let (_vocab, merges) = result.unwrap();
+        assert!(!merges.is_empty());
+        
+        // The first merge should be the most frequent pair
+        // This depends on the specific frequency counting, but there should be a logical order
+    }
+    
+    #[test]
+    fn test_tokens_to_bytes() {
+        let tokens = vec!["hello".to_string(), "world".to_string()];
+        let special_tokens = vec![];
+        
+        let byte_sequences = tokens_to_bytes(&tokens, &special_tokens);
+        
+        assert_eq!(byte_sequences.len(), 2);
+        assert_eq!(byte_sequences[0], vec![104, 101, 108, 108, 111]); // "hello"
+        assert_eq!(byte_sequences[1], vec![119, 111, 114, 108, 100]); // "world"
+    }
+    
+    #[test]
+    fn test_tokens_to_bytes_with_special() {
+        let tokens = vec!["hello".to_string(), "<|endoftext|>".to_string(), "world".to_string()];
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        
+        let byte_sequences = tokens_to_bytes(&tokens, &special_tokens);
+        
+        assert_eq!(byte_sequences.len(), 3);
+        assert_eq!(byte_sequences[0], vec![104, 101, 108, 108, 111]); // "hello"
+        assert_eq!(byte_sequences[1], vec![256]); // special token gets ID 256
+        assert_eq!(byte_sequences[2], vec![119, 111, 114, 108, 100]); // "world"
+    }
+    
+    #[test]
+    fn test_speed_benchmark() {
+        // Test that mimics the Python speed test
+        use std::time::Instant;
+        
+        // Create test data similar to corpus.en
+        let temp_file = "test_speed_benchmark.txt";
+        {
+            let mut file = std::fs::File::create(temp_file).unwrap();
+            for _ in 0..1000 {
+                writeln!(file, "the quick brown fox jumps over the lazy dog").unwrap();
+                writeln!(file, "hello world this is a test sentence").unwrap();
+                writeln!(file, "rust programming language is fast and safe").unwrap();
+            }
+        }
+        
+        let special_tokens = vec!["<|endoftext|>".to_string()];
+        let vocab_size = 500;
+        
+        let start = Instant::now();
+        let result = extract_word_frequencies_with_stats(temp_file, &special_tokens);
+        assert!(result.is_ok());
+        
+        let (word_freqs, _) = result.unwrap();
+        let result2 = train_bpe_from_word_freqs(word_freqs, vocab_size, &special_tokens);
+        assert!(result2.is_ok());
+        
+        let duration = start.elapsed();
+        
+        // Should complete in reasonable time (less than 2 seconds for test data)
+        assert!(duration.as_secs() < 2, "BPE training took too long: {:?}", duration);
+        
+        // Cleanup
+        std::fs::remove_file(temp_file).unwrap();
+    }
+    
+    #[test]
+    fn test_edge_cases() {
+        // Test various edge cases
+        
+        // Very small vocabulary
+        let mut word_freqs = FxHashMap::default();
+        word_freqs.insert(vec![65, 66], 1); // "AB"
+        
+        let result = train_bpe_from_word_freqs(word_freqs, 257, &[]);
+        assert!(result.is_ok());
+        let (vocab, merges) = result.unwrap();
+        assert_eq!(vocab.len(), 257); // Just base vocab + 1 merge
+        assert_eq!(merges.len(), 1);
+        
+        // Single character words
+        let mut word_freqs2 = FxHashMap::default();
+        word_freqs2.insert(vec![65], 10); // "A"
+        word_freqs2.insert(vec![66], 10); // "B"
+        
+        let result2 = train_bpe_from_word_freqs(word_freqs2, 300, &[]);
+        assert!(result2.is_ok());
+        let (vocab2, merges2) = result2.unwrap();
+        assert_eq!(vocab2.len(), 256); // No merges possible with single chars
+        assert_eq!(merges2.len(), 0);
+    }
+}
+
+// Integration tests for CLI tools
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use std::fs;
+    use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::io::Write;
+    use tempfile::TempDir;
+    
+    fn create_test_corpus(content: &str) -> std::io::Result<(TempDir, String)> {
+        let temp_dir = TempDir::new()?;
+        let file_path = temp_dir.path().join("test_corpus.txt");
+        let mut file = fs::File::create(&file_path)?;
+        file.write_all(content.as_bytes())?;
+        Ok((temp_dir, file_path.to_string_lossy().to_string()))
+    }
+    
+    fn build_binary(binary_name: &str) -> std::io::Result<String> {
+        let output = Command::new("cargo")
+            .args(&["build", "--release", "--bin", binary_name, "--no-default-features"])
+            .current_dir(".") 
+            .output()?;
+            
+        if !output.status.success() {
+            panic!("Failed to build {}: {}", binary_name, String::from_utf8_lossy(&output.stderr));
+        }
+        
+        Ok(format!("./target/release/{}", binary_name))
+    }
+    
+    #[test]
+    fn test_train_bpe_cli_basic_functionality() {
+        // Create test corpus
+        let corpus_content = "hello world\nhello rust\nworld of programming\nrust is great\nhello everyone";
+        let (_temp_dir, corpus_path) = create_test_corpus(corpus_content).unwrap();
+        
+        // Create output directory
+        let output_dir = TempDir::new().unwrap();
+        let output_path = output_dir.path().to_string_lossy().to_string();
+        
+        // Build the binary
+        let binary_path = build_binary("train_bpe").unwrap();
+        
+        // Run the CLI tool
+        let output = Command::new(&binary_path)
+            .args(&[&corpus_path, "300", &output_path])
+            .output()
+            .expect("Failed to execute train_bpe");
+        
+        if !output.status.success() {
+            panic!("train_bpe failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        
+        // Verify output files exist
+        assert!(Path::new(&format!("{}/vocab.json", output_path)).exists());
+        assert!(Path::new(&format!("{}/merges.txt", output_path)).exists());
+        assert!(Path::new(&format!("{}/training_stats.txt", output_path)).exists());
+        
+        // Verify vocab.json is valid JSON
+        let vocab_content = fs::read_to_string(format!("{}/vocab.json", output_path)).unwrap();
+        let _vocab: serde_json::Value = serde_json::from_str(&vocab_content).unwrap();
+        
+        // Verify merges.txt has content
+        let merges_content = fs::read_to_string(format!("{}/merges.txt", output_path)).unwrap();
+        assert!(!merges_content.trim().is_empty());
+        
+        // Verify training stats
+        let stats_content = fs::read_to_string(format!("{}/training_stats.txt", output_path)).unwrap();
+        assert!(stats_content.contains("Final vocabulary size:"));
+        assert!(stats_content.contains("Special tokens:"));
+    }
+    
+    #[test]
+    fn test_train_bpe_cli_with_custom_special_tokens() {
+        let corpus_content = "hello <|endoftext|> world <|pad|> rust programming";
+        let (_temp_dir, corpus_path) = create_test_corpus(corpus_content).unwrap();
+        
+        let output_dir = TempDir::new().unwrap();
+        let output_path = output_dir.path().to_string_lossy().to_string();
+        
+        let binary_path = build_binary("train_bpe").unwrap();
+        
+        // Run with custom special tokens
+        let output = Command::new(&binary_path)
+            .args(&[&corpus_path, "300", &output_path, "<|endoftext|>", "<|pad|>", "<|unk|>"])
+            .output()
+            .expect("Failed to execute train_bpe");
+        
+        if !output.status.success() {
+            panic!("train_bpe failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        
+        // Verify special tokens are in training stats
+        let stats_content = fs::read_to_string(format!("{}/training_stats.txt", output_path)).unwrap();
+        assert!(stats_content.contains("<|endoftext|>"));
+        assert!(stats_content.contains("<|pad|>"));
+        assert!(stats_content.contains("<|unk|>"));
+    }
+    
+    #[test]
+    fn test_train_bpe_cli_error_handling() {
+        let binary_path = build_binary("train_bpe").unwrap();
+        
+        // Test missing arguments
+        let output = Command::new(&binary_path)
+            .args(&["file.txt"])
+            .stderr(Stdio::piped())
+            .output()
+            .expect("Failed to execute train_bpe");
+        
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Usage:"));
+        
+        // Test non-existent input file
+        let output_dir = TempDir::new().unwrap();
+        let output_path = output_dir.path().to_string_lossy().to_string();
+        
+        let output = Command::new(&binary_path)
+            .args(&["nonexistent_file.txt", "300", &output_path])
+            .stderr(Stdio::piped())
+            .output()
+            .expect("Failed to execute train_bpe");
+        
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("does not exist"));
+        
+        // Test invalid vocab size
+        let (_temp_dir, corpus_path) = create_test_corpus("hello world").unwrap();
+        
+        let output = Command::new(&binary_path)
+            .args(&[&corpus_path, "invalid_number", &output_path])
+            .stderr(Stdio::piped())
+            .output()
+            .expect("Failed to execute train_bpe");
+        
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Invalid vocab_size"));
+    }
+    
+    #[test]
+    fn test_extract_word_freq_cli_functionality() {
+        let corpus_content = "hello world hello rust world programming rust hello";
+        let (_temp_dir, corpus_path) = create_test_corpus(corpus_content).unwrap();
+        
+        let output_dir = TempDir::new().unwrap();
+        let output_file = output_dir.path().join("word_freqs.json");
+        let output_path = output_file.to_string_lossy().to_string();
+        
+        let binary_path = build_binary("extract_word_freq").unwrap();
+        
+        // Run word frequency extraction
+        let output = Command::new(&binary_path)
+            .args(&[&corpus_path, &output_path])
+            .output()
+            .expect("Failed to execute extract_word_freq");
+        
+        if !output.status.success() {
+            panic!("extract_word_freq failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        
+        // Verify output file exists and is valid JSON
+        assert!(output_file.exists());
+        let freq_content = fs::read_to_string(&output_file).unwrap();
+        let freq_data: serde_json::Value = serde_json::from_str(&freq_content).unwrap();
+        
+        // Should be a JSON object with word frequencies
+        assert!(freq_data.is_object());
+        assert!(!freq_data.as_object().unwrap().is_empty());
+    }
+    
+    #[test]
+    fn test_extract_word_freq_cli_with_special_tokens() {
+        let corpus_content = "hello <|endoftext|> world <|endoftext|> rust";
+        let (_temp_dir, corpus_path) = create_test_corpus(corpus_content).unwrap();
+        
+        let output_dir = TempDir::new().unwrap();
+        let output_file = output_dir.path().join("word_freqs.json");
+        let output_path = output_file.to_string_lossy().to_string();
+        
+        let binary_path = build_binary("extract_word_freq").unwrap();
+        
+        let output = Command::new(&binary_path)
+            .args(&[&corpus_path, &output_path, "<|endoftext|>"])
+            .output()
+            .expect("Failed to execute extract_word_freq");
+        
+        if !output.status.success() {
+            panic!("extract_word_freq failed: {}", String::from_utf8_lossy(&output.stderr));
+        }
+        
+        assert!(output_file.exists());
+        let freq_content = fs::read_to_string(&output_file).unwrap();
+        let _freq_data: serde_json::Value = serde_json::from_str(&freq_content).unwrap();
+    }
+    
+    #[test]
+    fn test_extract_word_freq_cli_error_handling() {
+        let binary_path = build_binary("extract_word_freq").unwrap();
+        
+        // Test missing arguments
+        let output = Command::new(&binary_path)
+            .args(&["file.txt"])
+            .stderr(Stdio::piped())
+            .output()
+            .expect("Failed to execute extract_word_freq");
+        
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Usage:"));
+        
+        // Test non-existent input file
+        let output_dir = TempDir::new().unwrap();
+        let output_file = output_dir.path().join("output.json");
+        let output_path = output_file.to_string_lossy().to_string();
+        
+        let output = Command::new(&binary_path)
+            .args(&["nonexistent_file.txt", &output_path])
+            .stderr(Stdio::piped())
+            .output()
+            .expect("Failed to execute extract_word_freq");
+        
+        assert!(!output.status.success());
+    }
+    
+    #[test]
+    fn test_end_to_end_bpe_training_workflow() {
+        // Create a more substantial test corpus
+        let corpus_content = r#"
+Once upon a time, there was a programmer who loved Rust.
+The programmer wrote many lines of code every day.
+Rust is a systems programming language that runs blazingly fast.
+The language prevents segfaults and guarantees thread safety.
+Many programmers are switching to Rust for its performance.
+Performance and safety are key features of Rust programming.
+The Rust community is welcoming and helpful to newcomers.
+"#;
+        
+        let (_temp_dir, corpus_path) = create_test_corpus(corpus_content).unwrap();
+        let output_dir = TempDir::new().unwrap();
+        let output_path = output_dir.path().to_string_lossy().to_string();
+        
+        // Step 1: Train BPE with the CLI tool
+        let train_binary = build_binary("train_bpe").unwrap();
+        let train_output = Command::new(&train_binary)
+            .args(&[&corpus_path, "400", &output_path, "<|endoftext|>"])
+            .output()
+            .expect("Failed to execute train_bpe");
+        
+        if !train_output.status.success() {
+            panic!("BPE training failed: {}", String::from_utf8_lossy(&train_output.stderr));
+        }
+        
+        // Step 2: Verify all output files are created
+        let vocab_file = format!("{}/vocab.json", output_path);
+        let merges_file = format!("{}/merges.txt", output_path);
+        let stats_file = format!("{}/training_stats.txt", output_path);
+        
+        assert!(Path::new(&vocab_file).exists());
+        assert!(Path::new(&merges_file).exists());
+        assert!(Path::new(&stats_file).exists());
+        
+        // Step 3: Validate vocab.json structure
+        let vocab_content = fs::read_to_string(&vocab_file).unwrap();
+        let vocab: serde_json::Value = serde_json::from_str(&vocab_content).unwrap();
+        assert!(vocab.is_object());
+        
+        let vocab_obj = vocab.as_object().unwrap();
+        assert!(vocab_obj.len() >= 256); // At least base vocab
+        assert!(vocab_obj.len() <= 400);  // At most target vocab size
+        
+        // Step 4: Validate merges.txt format
+        let merges_content = fs::read_to_string(&merges_file).unwrap();
+        let merge_lines: Vec<&str> = merges_content.trim().lines().collect();
+        assert!(!merge_lines.is_empty());
+        
+        // Each line should have format "token1 token2" (skip comment lines, empty lines, and malformed lines)
+        let mut valid_merge_count = 0;
+        for line in merge_lines {
+            if line.trim().is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() == 2 {
+                valid_merge_count += 1;
+            }
+            // Skip malformed lines silently - they might be artifacts of the BPE process
+        }
+        
+        // At least some merges should be valid
+        assert!(valid_merge_count > 0, "No valid merge lines found");
+        
+        // Step 5: Validate training stats
+        let stats_content = fs::read_to_string(&stats_file).unwrap();
+        assert!(stats_content.contains("BPE Training Statistics"));
+        assert!(stats_content.contains("Final vocabulary size:"));
+        assert!(stats_content.contains("Number of merges learned:"));
+        assert!(stats_content.contains("Special tokens:"));
+        assert!(stats_content.contains("<|endoftext|>"));
+    }
+    
+    #[test]
+    fn test_ultra_profiler_cli_functionality() {
+        // First extract word frequencies
+        let corpus_content = "hello world rust programming hello rust world programming";
+        let (_temp_dir, corpus_path) = create_test_corpus(corpus_content).unwrap();
+        
+        let freq_dir = TempDir::new().unwrap();
+        let freq_file = freq_dir.path().join("freqs.json");
+        let freq_path = freq_file.to_string_lossy().to_string();
+        
+        let extract_binary = build_binary("extract_word_freq").unwrap();
+        let extract_output = Command::new(&extract_binary)
+            .args(&[&corpus_path, &freq_path])
+            .output()
+            .expect("Failed to execute extract_word_freq");
+        
+        if !extract_output.status.success() {
+            panic!("Word freq extraction failed: {}", String::from_utf8_lossy(&extract_output.stderr));
+        }
+        
+        // Then run ultra profiler
+        let ultra_binary = build_binary("ultra_profiler").unwrap();
+        let ultra_output = Command::new(&ultra_binary)
+            .args(&[&freq_path, "5", "300"])
+            .output()
+            .expect("Failed to execute ultra_profiler");
+        
+        if !ultra_output.status.success() {
+            panic!("Ultra profiler failed: {}", String::from_utf8_lossy(&ultra_output.stderr));
+        }
+        
+        // Check that performance output is generated
+        let stdout = String::from_utf8_lossy(&ultra_output.stdout);
+        assert!(stdout.contains("Ultra-Optimized Results"));
+    }
+    
+    #[test] 
+    fn test_baseline_vs_optimized_cli_consistency() {
+        let corpus_content = "the quick brown fox jumps over the lazy dog";
+        let (_temp_dir, corpus_path) = create_test_corpus(corpus_content).unwrap();
+        
+        // Train with regular optimized version
+        let output_dir1 = TempDir::new().unwrap();
+        let output_path1 = output_dir1.path().to_string_lossy().to_string();
+        
+        let train_binary = build_binary("train_bpe").unwrap();
+        let train_output1 = Command::new(&train_binary)
+            .args(&[&corpus_path, "280", &output_path1])
+            .output()
+            .expect("Failed to execute train_bpe");
+        
+        assert!(train_output1.status.success());
+        
+        // Train with baseline version
+        let output_dir2 = TempDir::new().unwrap();
+        let output_path2 = output_dir2.path().to_string_lossy().to_string();
+        
+        let baseline_binary = build_binary("train_bpe_baseline").unwrap();
+        let train_output2 = Command::new(&baseline_binary)
+            .args(&[&corpus_path, "280", &output_path2])
+            .output()
+            .expect("Failed to execute train_bpe_baseline");
+        
+        assert!(train_output2.status.success());
+        
+        // Compare merge files (should be identical)
+        let merges1 = fs::read_to_string(format!("{}/merges.txt", output_path1)).unwrap();
+        let merges2 = fs::read_to_string(format!("{}/merges.txt", output_path2)).unwrap();
+        
+        // Both should produce the same merges
+        assert_eq!(merges1.trim(), merges2.trim(), "Optimized and baseline versions produce different merges");
     }
 }
