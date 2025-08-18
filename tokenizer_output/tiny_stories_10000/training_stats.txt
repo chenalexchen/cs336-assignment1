@@ -1,0 +1,16 @@
+OpenWebText BPE Training Statistics
+=====================================
+
+Vocabulary size: 10000
+Number of merges: 9743
+Special tokens: ["<|endoftext|>"]
+
+Base vocabulary (0-255): 256 byte tokens
+Special tokens: 1
+Learned merges: 9743
+
+Vocabulary composition:
+- Byte tokens (0-255): 256
+- Special tokens: 1
+- Merged tokens: 9743
+- Total: 10000

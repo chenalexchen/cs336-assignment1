@@ -559,7 +559,59 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    raise NotImplementedError
+    try:
+        # Try to use Rust implementation first
+        import rust_bpe
+        
+        # Convert vocab to the format expected by Rust
+        rust_vocab = {k: list(v) for k, v in vocab.items()}
+        rust_merges = [(list(t1), list(t2)) for t1, t2 in merges]
+        
+        rust_tokenizer = rust_bpe.BPETokenizer(rust_vocab, rust_merges, special_tokens)
+        
+        # Wrap the Rust tokenizer to add missing methods
+        class WrappedRustTokenizer:
+            def __init__(self, rust_tokenizer):
+                self.rust_tokenizer = rust_tokenizer
+            
+            def encode(self, text):
+                return self.rust_tokenizer.encode(text)
+            
+            def decode(self, token_ids):
+                return self.rust_tokenizer.decode(token_ids)
+            
+            def encode_iterable(self, text_iterable):
+                """Memory-efficient encoding of an iterable of text (e.g., file lines)."""
+                buffer = ""
+                
+                for line in text_iterable:
+                    buffer += line
+                    
+                    # Process complete lines or when buffer gets large
+                    if '\n' in buffer or len(buffer) > 1024:
+                        # Split on newlines and keep the last incomplete line in buffer
+                        lines = buffer.split('\n')
+                        buffer = lines[-1]  # Keep incomplete last line
+                        
+                        # Process complete lines (including empty lines)
+                        for complete_line in lines[:-1]:
+                            # Always add newline back since split removed it
+                            line_with_newline = complete_line + '\n'
+                            token_ids = self.rust_tokenizer.encode(line_with_newline)
+                            for token_id in token_ids:
+                                yield token_id
+                
+                # Process any remaining text in buffer
+                if buffer:
+                    token_ids = self.rust_tokenizer.encode(buffer)
+                    for token_id in token_ids:
+                        yield token_id
+        
+        return WrappedRustTokenizer(rust_tokenizer)
+    except ImportError:
+        # Fall back to Python implementation
+        from code.bpe_tokenizer import BPETokenizer
+        return BPETokenizer(vocab, merges, special_tokens)
 
 
 def run_train_bpe(
@@ -589,4 +641,18 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    try:
+        # Try to use Rust implementation first
+        import rust_bpe
+        
+        vocab, merges = rust_bpe.train_bpe(str(input_path), vocab_size, special_tokens)
+        
+        # Convert back to Python format (bytes instead of list[u8])
+        python_vocab = {k: bytes(v) for k, v in vocab.items()}
+        python_merges = [(bytes(t1), bytes(t2)) for t1, t2 in merges]
+        
+        return python_vocab, python_merges
+    except ImportError:
+        # Fall back to Python implementation
+        from code.bpe_tokenizer import train_bpe
+        return train_bpe(input_path, vocab_size, special_tokens)

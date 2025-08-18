@@ -1,0 +1,63 @@
+[package]
+name = "rust_bpe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_bpe"
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+name = "bpe_profiler"
+path = "src/bin/bpe_profiler.rs"
+
+[[bin]]
+name = "train_bpe"
+path = "src/bin/train_bpe.rs"
+
+[[bin]]
+name = "train_bpe_baseline"
+path = "src/bin/train_bpe_baseline.rs"
+
+[[bin]]
+name = "extract_word_freq"
+path = "src/bin/extract_word_freq.rs"
+
+[[bin]]
+name = "merge_profiler"
+path = "src/bin/merge_profiler.rs"
+
+[[bin]]
+name = "detailed_profiler"
+path = "src/bin/detailed_profiler.rs"
+
+[[bin]]
+name = "ultra_profiler"
+path = "src/bin/ultra_profiler.rs"
+
+[[bin]]
+name = "simd_profiler"
+path = "src/bin/simd_profiler.rs"
+
+[dependencies]
+pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
+regex = "1.10"
+rayon = "1.8"
+rustc-hash = "2.0"
+memchr = "2.7"
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+
+[features]
+default = ["python"]
+python = ["pyo3"]
+
+[build-dependencies]
+pyo3-build-config = "0.22"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = true
