@@ -8,7 +8,7 @@ from jaxtyping import Float, Int
 import numpy.typing as npt
 import torch
 from torch import Tensor
-
+from code.transformers import Linear
 
 def run_linear(
     d_in: int,
@@ -28,9 +28,9 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
-
+    linear_layer = Linear(d_in, d_out)
+    linear_layer.weight.data = weights
+    return linear_layer.forward(in_features)
 
 def run_embedding(
     vocab_size: int,
