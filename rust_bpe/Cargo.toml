@@ -39,6 +39,10 @@ path = "src/bin/ultra_profiler.rs"
 name = "simd_profiler"
 path = "src/bin/simd_profiler.rs"
 
+[[bin]]
+name = "ultra_profiler_u16"
+path = "src/bin/ultra_profiler_u16.rs"
+
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 regex = "1.10"

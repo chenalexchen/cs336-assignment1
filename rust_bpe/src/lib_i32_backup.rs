@@ -2,6 +2,7 @@
 use pyo3::prelude::*;
 
 // U16 optimized version for memory efficiency
+pub mod lib_u16;
 use regex::Regex;
 use rayon::prelude::*;
 use rustc_hash::{FxHashMap, FxBuildHasher};
@@ -23,11 +24,11 @@ fn get_pre_tokenize_regex() -> &'static Regex {
     })
 }
 
-/// Priority queue entry for efficient pair selection (u16 optimized)
+/// Priority queue entry for efficient pair selection
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PairEntry {
     count: u64,
-    pair: (u16, u16),
+    pair: (i32, i32),
     // Tie-breaker using lexicographic ordering of token bytes
     tie_breaker: (Vec<u8>, Vec<u8>),
 }
@@ -58,25 +59,27 @@ struct MergeRule {
     token2: Vec<u8>,
 }
 
-/// BPE Tokenizer implementation (u16 optimized for memory efficiency)
+/// BPE Tokenizer implementation
 #[cfg_attr(feature = "python", pyclass)]
 pub struct BPETokenizer {
-    vocab: FxHashMap<u16, Vec<u8>>,
-    vocab_reverse: FxHashMap<Vec<u8>, u16>,
+    vocab: FxHashMap<i32, Vec<u8>>,
+    vocab_reverse: FxHashMap<Vec<u8>, i32>,
     merges: Vec<MergeRule>,
     special_tokens: Vec<String>,
-    special_token_ids: FxHashMap<String, u16>,
+    special_token_ids: FxHashMap<String, i32>,
 }
 
+#[cfg_attr(feature = "python", pymethods)]
 impl BPETokenizer {
-    /// Internal constructor using u16 token IDs
-    fn new_internal(
-        vocab: HashMap<u16, Vec<u8>>,
+    #[cfg_attr(feature = "python", new)]
+    #[cfg_attr(feature = "python", pyo3(signature = (vocab, merges, special_tokens=None)))]
+    pub fn new(
+        vocab: HashMap<i32, Vec<u8>>,
         merges: Vec<(Vec<u8>, Vec<u8>)>,
         special_tokens: Option<Vec<String>>,
     ) -> Self {
-        let vocab: FxHashMap<u16, Vec<u8>> = vocab.into_iter().collect();
-        let vocab_reverse: FxHashMap<Vec<u8>, u16> = vocab.iter().map(|(k, v)| (v.clone(), *k)).collect();
+        let vocab: FxHashMap<i32, Vec<u8>> = vocab.into_iter().collect();
+        let vocab_reverse: FxHashMap<Vec<u8>, i32> = vocab.iter().map(|(k, v)| (v.clone(), *k)).collect();
         
         let merges = merges
             .into_iter()
@@ -102,44 +105,9 @@ impl BPETokenizer {
             special_token_ids,
         }
     }
-    
-    /// Rust-native constructor using u16 token IDs
-    pub fn new(
-        vocab: HashMap<u16, Vec<u8>>,
-        merges: Vec<(Vec<u8>, Vec<u8>)>,
-        special_tokens: Option<Vec<String>>,
-    ) -> Self {
-        Self::new_internal(vocab, merges, special_tokens)
-    }
-}
 
-#[cfg_attr(feature = "python", pymethods)]
-impl BPETokenizer {
-    /// Python-compatible constructor using i32 token IDs (converts to u16 internally)
-    #[cfg(feature = "python")]
-    #[new]
-    #[pyo3(signature = (vocab_i32, merges, special_tokens=None))]
-    pub fn new_from_python(
-        vocab_i32: HashMap<i32, Vec<u8>>,
-        merges: Vec<(Vec<u8>, Vec<u8>)>,
-        special_tokens: Option<Vec<String>>,
-    ) -> PyResult<Self> {
-        // Convert i32 vocab to u16 vocab with validation
-        let mut vocab = HashMap::new();
-        for (token_id, token_bytes) in vocab_i32 {
-            if token_id < 0 || token_id > 65535 {
-                return Err(pyo3::exceptions::PyValueError::new_err(
-                    format!("Token ID {} out of u16 range (0-65535)", token_id)
-                ));
-            }
-            vocab.insert(token_id as u16, token_bytes);
-        }
-        
-        Ok(Self::new_internal(vocab, merges, special_tokens))
-    }
-
-    /// Encode text into token IDs (u16 for memory efficiency)
-    pub fn encode(&self, text: &str) -> Vec<u16> {
+    /// Encode text into token IDs
+    pub fn encode(&self, text: &str) -> Vec<i32> {
         if text.is_empty() {
             return Vec::new();
         }
@@ -149,7 +117,7 @@ impl BPETokenizer {
         
         let mut result = Vec::new();
         for byte_seq in byte_sequences {
-            let token_ids = self.apply_merges(byte_seq);
+            let token_ids = self.apply_merges(&byte_seq);
             result.extend(token_ids);
         }
         
@@ -157,10 +125,10 @@ impl BPETokenizer {
     }
 
     /// Decode token IDs back to text
-    pub fn decode(&self, token_ids: Vec<u16>) -> String {
+    pub fn decode(&self, token_ids: &[i32]) -> String {
         let mut result = Vec::new();
         
-        for token_id in &token_ids {
+        for token_id in token_ids {
             if let Some(token_bytes) = self.vocab.get(&token_id) {
                 result.extend_from_slice(token_bytes);
             }
@@ -168,43 +136,14 @@ impl BPETokenizer {
         
         String::from_utf8_lossy(&result).to_string()
     }
-    
-    /// Python-compatible encode method returning i32 token IDs
-    #[cfg(feature = "python")]
-    pub fn encode_python(&self, text: &str) -> Vec<i32> {
-        self.encode(text).into_iter().map(|id| id as i32).collect()
-    }
-    
-    /// Python-compatible decode method accepting i32 token IDs
-    #[cfg(feature = "python")]  
-    pub fn decode_python(&self, token_ids: Vec<i32>) -> PyResult<String> {
-        // Convert i32 to u16 with validation
-        let u16_tokens: Result<Vec<u16>, _> = token_ids
-            .into_iter()
-            .map(|id| {
-                if id < 0 || id > 65535 {
-                    Err(pyo3::exceptions::PyValueError::new_err(
-                        format!("Token ID {} out of u16 range (0-65535)", id)
-                    ))
-                } else {
-                    Ok(id as u16)
-                }
-            })
-            .collect();
-            
-        match u16_tokens {
-            Ok(tokens) => Ok(self.decode(tokens)),
-            Err(e) => Err(e),
-        }
-    }
 
     /// Apply BPE merges to a sequence of byte tokens
-    fn apply_merges(&self, byte_seq: Vec<u16>) -> Vec<u16> {
+    fn apply_merges(&self, byte_seq: &[i32]) -> Vec<i32> {
         if byte_seq.len() <= 1 {
-            return byte_seq;
+            return byte_seq.to_vec();
         }
 
-        let mut word: Vec<u16> = byte_seq;
+        let mut word: Vec<i32> = byte_seq.to_vec();
         
         loop {
             let mut best_merge_idx = None;
@@ -331,17 +270,17 @@ fn pre_tokenize(text: &str, special_tokens: &[String]) -> Vec<String> {
 }
 
 /// Convert text tokens to byte token sequences
-fn tokens_to_bytes(tokens: &[String], special_tokens: &[String]) -> Vec<Vec<u16>> {
+fn tokens_to_bytes(tokens: &[String], special_tokens: &[String]) -> Vec<Vec<i32>> {
     tokens
         .iter()
         .map(|token| {
             if special_tokens.contains(token) {
                 // Special tokens become single tokens with IDs >= 256
-                let special_id = 256 + special_tokens.iter().position(|t| t == token).unwrap() as u16;
+                let special_id = 256 + special_tokens.iter().position(|t| t == token).unwrap() as i32;
                 vec![special_id]
             } else {
                 // Regular text becomes byte sequences
-                token.bytes().map(|b| b as u16).collect()
+                token.bytes().map(|b| b as i32).collect()
             }
         })
         .collect()
@@ -351,7 +290,7 @@ fn tokens_to_bytes(tokens: &[String], special_tokens: &[String]) -> Vec<Vec<u16>
 pub fn extract_word_frequencies_with_stats(
     file_path: &str,
     special_tokens: &[String],
-) -> Result<(FxHashMap<Vec<u16>, u64>, usize), Box<dyn std::error::Error>> {
+) -> Result<(FxHashMap<Vec<i32>, u64>, usize), Box<dyn std::error::Error>> {
     let file = File::open(file_path)?;
     let file_size = file.metadata()?.len();
     
@@ -371,7 +310,7 @@ pub fn extract_word_frequencies_with_stats(
 fn extract_word_frequencies_streaming(
     file_path: &str,
     special_tokens: &[String],
-) -> Result<(FxHashMap<Vec<u16>, u64>, usize), Box<dyn std::error::Error>> {
+) -> Result<(FxHashMap<Vec<i32>, u64>, usize), Box<dyn std::error::Error>> {
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     
@@ -384,7 +323,7 @@ fn extract_word_frequencies_streaming(
     
     // Channels for pipeline
     let (chunk_sender, chunk_receiver) = mpsc::sync_channel::<(Vec<u8>, usize)>(4);
-    let (result_sender, result_receiver) = mpsc::sync_channel::<FxHashMap<Vec<u16>, u64>>(8);
+    let (result_sender, result_receiver) = mpsc::sync_channel::<FxHashMap<Vec<i32>, u64>>(8);
     
     let chunk_receiver = Arc::new(Mutex::new(chunk_receiver));
     let special_tokens = special_tokens.to_vec();
@@ -471,7 +410,7 @@ fn extract_word_frequencies_streaming(
     drop(result_sender); // Allow workers to finish
     
     let collector_handle = thread::spawn(move || {
-        let mut final_word_freqs: FxHashMap<Vec<u16>, u64> = FxHashMap::default();
+        let mut final_word_freqs: FxHashMap<Vec<i32>, u64> = FxHashMap::default();
         let mut processed_chunks = 0;
         
         while let Ok(chunk_result) = result_receiver.recv() {
@@ -503,7 +442,7 @@ fn extract_word_frequencies_streaming(
 fn extract_word_frequencies_parallel(
     file_path: &str,
     special_tokens: &[String],
-) -> Result<(FxHashMap<Vec<u16>, u64>, usize), Box<dyn std::error::Error>> {
+) -> Result<(FxHashMap<Vec<i32>, u64>, usize), Box<dyn std::error::Error>> {
     let file = File::open(file_path)?;
     let reader = BufReader::new(file);
     
@@ -514,7 +453,7 @@ fn extract_word_frequencies_parallel(
     // Process in parallel chunks
     let chunk_size = (lines.len() / rayon::current_num_threads()).max(1000);
     
-    let word_freqs: FxHashMap<Vec<u16>, u64> = lines
+    let word_freqs: FxHashMap<Vec<i32>, u64> = lines
         .par_chunks(chunk_size)
         .map(|chunk| {
             let text = chunk.join("\n");
@@ -535,7 +474,7 @@ fn extract_word_frequencies_parallel(
 }
 
 /// Process a chunk of text into word frequencies
-fn process_text_chunk(text: &str, special_tokens: &[String]) -> FxHashMap<Vec<u16>, u64> {
+fn process_text_chunk(text: &str, special_tokens: &[String]) -> FxHashMap<Vec<i32>, u64> {
     let mut word_freqs = FxHashMap::default();
     
     // Split into lines and process each
@@ -561,18 +500,18 @@ fn process_text_chunk(text: &str, special_tokens: &[String]) -> FxHashMap<Vec<u1
 
 /// Simple baseline BPE training (without optimizations) for comparison
 pub fn train_bpe_from_word_freqs_baseline(
-    word_freqs: FxHashMap<Vec<u16>, u64>,
+    word_freqs: FxHashMap<Vec<i32>, u64>,
     vocab_size: usize,
     special_tokens: &[String],
-) -> Result<(HashMap<u16, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
+) -> Result<(HashMap<i32, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
     
     println!("📊 Using baseline BPE training algorithm (no optimizations)");
     
     // Initialize vocabulary with base bytes (0-255)
-    let mut vocab: HashMap<u16, Vec<u8>> = (0..256)
-        .map(|i| (i as u16, vec![i as u8]))
+    let mut vocab: HashMap<i32, Vec<u8>> = (0..256)
+        .map(|i| (i as i32, vec![i as u8]))
         .collect();
-    let mut next_token_id = 256u16;
+    let mut next_token_id = 256i32;
     
     // Add special tokens to vocab
     for special_token in special_tokens {
@@ -594,7 +533,7 @@ pub fn train_bpe_from_word_freqs_baseline(
     println!("Building initial pair counts...");
     let pair_count_start = std::time::Instant::now();
     
-    let mut pair_counts: FxHashMap<(u16, u16), u64> = FxHashMap::default();
+    let mut pair_counts: FxHashMap<(i32, i32), u64> = FxHashMap::default();
     for (word_tokens, freq) in &word_freqs {
         for window in word_tokens.windows(2) {
             let pair = (window[0], window[1]);
@@ -683,18 +622,18 @@ pub fn train_bpe_from_word_freqs_baseline(
 
 /// Optimized BPE training with all performance improvements
 pub fn train_bpe_from_word_freqs(
-    word_freqs: FxHashMap<Vec<u16>, u64>,
+    word_freqs: FxHashMap<Vec<i32>, u64>,
     vocab_size: usize,
     special_tokens: &[String],
-) -> Result<(HashMap<u16, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
+) -> Result<(HashMap<i32, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
     
     println!("🚀 Using optimized BPE training algorithm");
     
     // Initialize vocabulary with base bytes (0-255)
-    let mut vocab: HashMap<u16, Vec<u8>> = (0..256)
-        .map(|i| (i as u16, vec![i as u8]))
+    let mut vocab: HashMap<i32, Vec<u8>> = (0..256)
+        .map(|i| (i as i32, vec![i as u8]))
         .collect();
-    let mut next_token_id = 256u16;
+    let mut next_token_id = 256i32;
     
     // Add special tokens to vocab
     for special_token in special_tokens {
@@ -713,7 +652,7 @@ pub fn train_bpe_from_word_freqs(
     println!("Initial unique words: {}", word_freqs.len());
     
     // OPTIMIZATION 1: Pre-allocate collections with known capacity
-    let mut pair_counts: FxHashMap<(u16, u16), u64> = FxHashMap::with_capacity_and_hasher(
+    let mut pair_counts: FxHashMap<(i32, i32), u64> = FxHashMap::with_capacity_and_hasher(
         word_freqs.len() * 4, // Estimate: avg 4 pairs per word
         FxBuildHasher::default()
     );
@@ -723,7 +662,7 @@ pub fn train_bpe_from_word_freqs(
     let pair_count_start = std::time::Instant::now();
     
     // Parallel initial pair counting
-    let pair_count_results: Vec<FxHashMap<(u16, u16), u64>> = word_freqs
+    let pair_count_results: Vec<FxHashMap<(i32, i32), u64>> = word_freqs
         .par_iter()
         .map(|(word_tokens, freq)| {
             let mut local_counts = FxHashMap::default();
@@ -853,11 +792,11 @@ pub fn train_bpe_from_word_freqs(
 
 /// Optimized merge processing for large datasets using streaming
 fn process_merge_optimized_streaming(
-    word_freqs: FxHashMap<Vec<u16>, u64>,
-    token1_id: u16,
-    token2_id: u16,
-    new_token_id: u16,
-) -> (FxHashMap<Vec<u16>, u64>, FxHashMap<(u16, u16), i64>) {
+    word_freqs: FxHashMap<Vec<i32>, u64>,
+    token1_id: i32,
+    token2_id: i32,
+    new_token_id: i32,
+) -> (FxHashMap<Vec<i32>, u64>, FxHashMap<(i32, i32), i64>) {
     
     // Convert to vector for parallel processing
     let word_freqs_vec: Vec<_> = word_freqs.into_iter().collect();
@@ -868,7 +807,7 @@ fn process_merge_optimized_streaming(
         .par_chunks(chunk_size)
         .map(|chunk| {
             let mut new_word_freqs = FxHashMap::default();
-            let mut pair_deltas: FxHashMap<(u16, u16), i64> = FxHashMap::default();
+            let mut pair_deltas: FxHashMap<(i32, i32), i64> = FxHashMap::default();
             
             for (word_tokens, freq) in chunk {
                 let new_word = apply_merge_to_word(word_tokens, token1_id, token2_id, new_token_id);
@@ -887,7 +826,7 @@ fn process_merge_optimized_streaming(
     
     // Merge results
     let mut final_word_freqs = FxHashMap::default();
-    let mut final_pair_deltas: FxHashMap<(u16, u16), i64> = FxHashMap::default();
+    let mut final_pair_deltas: FxHashMap<(i32, i32), i64> = FxHashMap::default();
     
     for (word_freqs, pair_deltas) in results {
         for (word, freq) in word_freqs {
@@ -904,11 +843,11 @@ fn process_merge_optimized_streaming(
 
 /// Optimized merge processing for medium datasets
 fn process_merge_optimized_parallel(
-    word_freqs: FxHashMap<Vec<u16>, u64>,
-    token1_id: u16,
-    token2_id: u16,
-    new_token_id: u16,
-) -> (FxHashMap<Vec<u16>, u64>, FxHashMap<(u16, u16), i64>) {
+    word_freqs: FxHashMap<Vec<i32>, u64>,
+    token1_id: i32,
+    token2_id: i32,
+    new_token_id: i32,
+) -> (FxHashMap<Vec<i32>, u64>, FxHashMap<(i32, i32), i64>) {
     
     let word_freqs_vec: Vec<_> = word_freqs.into_iter().collect();
     
@@ -929,7 +868,7 @@ fn process_merge_optimized_parallel(
         .collect();
     
     // Process only affected words
-    let pair_deltas: FxHashMap<(u16, u16), i64> = affected_words
+    let pair_deltas: FxHashMap<(i32, i32), i64> = affected_words
         .par_iter()
         .map(|(word_tokens, freq)| {
             let new_word = apply_merge_to_word(word_tokens, token1_id, token2_id, new_token_id);
@@ -948,7 +887,7 @@ fn process_merge_optimized_parallel(
         );
     
     // Reconstruct word frequencies
-    let mut new_word_freqs: FxHashMap<Vec<u16>, u64> = unaffected_words.into_iter().collect();
+    let mut new_word_freqs: FxHashMap<Vec<i32>, u64> = unaffected_words.into_iter().collect();
     
     for (word_tokens, freq) in affected_words {
         let new_word = apply_merge_to_word(word_tokens, token1_id, token2_id, new_token_id);
@@ -960,11 +899,11 @@ fn process_merge_optimized_parallel(
 
 /// Apply a single merge to a word
 fn apply_merge_to_word(
-    word_tokens: &[u16],
-    token1_id: u16,
-    token2_id: u16,
-    new_token_id: u16,
-) -> Vec<u16> {
+    word_tokens: &[i32],
+    token1_id: i32,
+    token2_id: i32,
+    new_token_id: i32,
+) -> Vec<i32> {
     let mut result = Vec::with_capacity(word_tokens.len());
     let mut i = 0;
     
@@ -986,9 +925,9 @@ fn apply_merge_to_word(
 
 /// Update pair count deltas efficiently
 fn update_pair_deltas(
-    pair_deltas: &mut FxHashMap<(u16, u16), i64>,
-    old_word: &[u16],
-    new_word: &[u16],
+    pair_deltas: &mut FxHashMap<(i32, i32), i64>,
+    old_word: &[i32],
+    new_word: &[i32],
     freq: u64,
 ) {
     let freq_delta = freq as i64;
@@ -1006,35 +945,17 @@ fn update_pair_deltas(
     }
 }
 
-/// Train BPE from a text file (Rust-native function returning u16)
+/// Train BPE from a text file (Python-compatible function)
+#[cfg(feature = "python")]
+#[cfg_attr(feature = "python", pyo3::pyfunction)]
 pub fn train_bpe(
     input_path: &str,
     vocab_size: usize,
     special_tokens: Vec<String>,
-) -> Result<(HashMap<u16, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
+) -> Result<(HashMap<i32, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
     let (word_freqs, _chunk_count) = extract_word_frequencies_with_stats(input_path, &special_tokens)?;
     let (vocab, merges) = train_bpe_from_word_freqs(word_freqs, vocab_size, &special_tokens)?;
     Ok((vocab, merges))
-}
-
-/// Train BPE from a text file (Python-compatible function returning i32)
-#[cfg(feature = "python")]
-#[cfg_attr(feature = "python", pyo3::pyfunction)]
-pub fn train_bpe_python(
-    input_path: &str,
-    vocab_size: usize,
-    special_tokens: Vec<String>,
-) -> PyResult<(HashMap<i32, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>)> {
-    let (u16_vocab, merges) = train_bpe(input_path, vocab_size, special_tokens)
-        .map_err(|e| pyo3::exceptions::PyRuntimeError::new_err(e.to_string()))?;
-    
-    // Convert u16 vocab to i32 for Python compatibility
-    let i32_vocab: HashMap<i32, Vec<u8>> = u16_vocab
-        .into_iter()
-        .map(|(k, v)| (k as i32, v))
-        .collect();
-    
-    Ok((i32_vocab, merges))
 }
 
 /// Python module
@@ -1042,7 +963,7 @@ pub fn train_bpe_python(
 #[cfg_attr(feature = "python", pyo3::pymodule)]
 fn rust_bpe(m: &pyo3::Bound<'_, pyo3::types::PyModule>) -> pyo3::PyResult<()> {
     m.add_class::<BPETokenizer>()?;
-    m.add_function(pyo3::wrap_pyfunction!(train_bpe_python, m)?)?;
+    m.add_function(pyo3::wrap_pyfunction!(train_bpe, m)?)?;
     Ok(())
 }
 
@@ -1051,8 +972,8 @@ mod tests {
     use super::*;
     use std::io::Write;
     
-    fn create_test_vocab() -> FxHashMap<u16, Vec<u8>> {
-        (0..256).map(|i| (i as u16, vec![i as u8])).collect()
+    fn create_test_vocab() -> FxHashMap<i32, Vec<u8>> {
+        (0..256).map(|i| (i as i32, vec![i as u8])).collect()
     }
     
     fn create_test_tokenizer_with_merges(merges: Vec<(Vec<u8>, Vec<u8>)>) -> BPETokenizer {
@@ -1063,12 +984,12 @@ mod tests {
         for (token1, token2) in &merges {
             let mut merged = token1.clone();
             merged.extend_from_slice(token2);
-            vocab.insert(next_id as u16, merged);
+            vocab.insert(next_id, merged);
             next_id += 1;
         }
         
         // Add special token
-        vocab.insert(next_id as u16, b"<|endoftext|>".to_vec());
+        vocab.insert(next_id, b"<|endoftext|>".to_vec());
         
         BPETokenizer::new(
             vocab.into_iter().collect(),
@@ -1081,9 +1002,9 @@ mod tests {
     fn test_empty_text_encoding() {
         let tokenizer = create_test_tokenizer_with_merges(vec![]);
         let encoded = tokenizer.encode("");
-        assert_eq!(encoded, Vec::<u16>::new());
+        assert_eq!(encoded, Vec::<i32>::new());
         
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, "");
     }
     
@@ -1095,7 +1016,7 @@ mod tests {
         let encoded = tokenizer.encode("A");
         assert_eq!(encoded, vec![65]); // ASCII 'A' = 65
         
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, "A");
     }
     
@@ -1105,7 +1026,7 @@ mod tests {
         
         let text = "🙃";
         let encoded = tokenizer.encode(text);
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, text);
         
         // Test that it round-trips correctly
@@ -1118,7 +1039,7 @@ mod tests {
         
         let text = "Hello, how are you?";
         let encoded = tokenizer.encode(text);
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, text);
         
         // Should have multiple tokens due to pre-tokenization
@@ -1131,7 +1052,7 @@ mod tests {
         
         let text = "Héllò hôw are ü? 🙃";
         let encoded = tokenizer.encode(text);
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, text);
     }
     
@@ -1143,7 +1064,7 @@ mod tests {
         ]);
         
         let encoded = tokenizer.encode("the");
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, "the");
         
         // Should contain the merged token (256) for "th"
@@ -1160,7 +1081,7 @@ mod tests {
         ]);
         
         let encoded = tokenizer.encode("the");
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, "the");
         
         // Should use the most complete merge (258 for "the")
@@ -1179,7 +1100,7 @@ mod tests {
         );
         
         let encoded = tokenizer.encode("Hello<|endoftext|>");
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, "Hello<|endoftext|>");
         
         // Should contain the special token ID (256)
@@ -1200,7 +1121,7 @@ mod tests {
         
         let text = "<|endoftext|><|endoftext|>";
         let encoded = tokenizer.encode(text);
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, text);
         
         // Should use the longer special token (257)
@@ -1222,7 +1143,7 @@ mod tests {
         
         let text = "Héllò hôw <|endoftext|><|endoftext|> are ü? 🙃<|endoftext|>";
         let encoded = tokenizer.encode(text);
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         assert_eq!(decoded, text);
         
         // Count special token occurrences
@@ -1307,7 +1228,7 @@ mod tests {
         assert!(!word_freqs.is_empty());
         
         // Should have entries for common words
-        let hello_bytes: Vec<u16> = "hello".bytes().map(|b| b as u16).collect();
+        let hello_bytes: Vec<i32> = "hello".bytes().map(|b| b as i32).collect();
         assert!(word_freqs.contains_key(&hello_bytes));
         
         // Cleanup
@@ -1374,7 +1295,7 @@ mod tests {
         let mut word_freqs = FxHashMap::default();
         // Add more realistic data
         for i in 0..1000 {
-            let word = vec![65 + (i % 26) as u16, 66 + ((i + 1) % 26) as u16, 67 + ((i + 2) % 26) as u16];
+            let word = vec![65 + (i % 26) as i32, 66 + ((i + 1) % 26) as i32, 67 + ((i + 2) % 26) as i32];
             word_freqs.insert(word, (i % 10 + 1) as u64);
         }
         
@@ -1419,7 +1340,7 @@ mod tests {
         
         let text = "Hello <|special|> world <|endoftext|>";
         let encoded = tokenizer.encode(text);
-        let decoded = tokenizer.decode(encoded.clone());
+        let decoded = tokenizer.decode(&encoded);
         
         assert_eq!(decoded, text);
         assert!(encoded.contains(&256)); // <|endoftext|>
@@ -1433,8 +1354,8 @@ mod tests {
         
         // Create a diverse set of words
         for i in 0..100 {
-            let word1 = vec![65 + (i % 26) as u16, 97 + (i % 26) as u16]; // Capital + lowercase
-            let word2 = vec![48 + (i % 10) as u16, 65 + (i % 26) as u16]; // Number + letter
+            let word1 = vec![65 + (i % 26) as i32, 97 + (i % 26) as i32]; // Capital + lowercase
+            let word2 = vec![48 + (i % 10) as i32, 65 + (i % 26) as i32]; // Number + letter
             
             word_freqs.insert(word1, 1);
             word_freqs.insert(word2, 1);

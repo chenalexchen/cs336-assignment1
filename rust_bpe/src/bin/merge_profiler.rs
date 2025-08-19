@@ -76,7 +76,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
 }
 
 /// Load word frequencies from JSON file
-fn load_word_frequencies(file_path: &str) -> Result<FxHashMap<Vec<i32>, u64>, Box<dyn std::error::Error>> {
+fn load_word_frequencies(file_path: &str) -> Result<FxHashMap<Vec<u16>, u64>, Box<dyn std::error::Error>> {
     println!("📖 Loading word frequencies from {}...", file_path);
     let load_start = Instant::now();
     
@@ -87,13 +87,13 @@ fn load_word_frequencies(file_path: &str) -> Result<FxHashMap<Vec<i32>, u64>, Bo
     let word_freqs_serialized: std::collections::BTreeMap<String, u64> = 
         serde_json::from_str(&contents)?;
     
-    // Convert back to FxHashMap<Vec<i32>, u64>
+    // Convert back to FxHashMap<Vec<u16>, u64>
     let mut word_freqs = FxHashMap::default();
     for (word_str, freq) in word_freqs_serialized {
-        // Parse comma-separated token IDs back to Vec<i32>
-        let word_tokens: Vec<i32> = word_str
+        // Parse comma-separated token IDs back to Vec<u16>
+        let word_tokens: Vec<u16> = word_str
             .split(',')
-            .map(|s| s.parse::<i32>())
+            .map(|s| s.parse::<u16>())
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("Failed to parse token IDs: {}", e))?;
         
@@ -108,12 +108,12 @@ fn load_word_frequencies(file_path: &str) -> Result<FxHashMap<Vec<i32>, u64>, Bo
 
 /// Modified BPE training function that stops after N merges
 fn train_bpe_limited_merges(
-    word_freqs: FxHashMap<Vec<i32>, u64>,
+    word_freqs: FxHashMap<Vec<u16>, u64>,
     max_merges: usize,
     vocab_size: usize,
     special_tokens: &[String],
     use_baseline: bool,
-) -> Result<(HashMap<i32, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>, f64), Box<dyn std::error::Error>> {
+) -> Result<(HashMap<u16, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>, f64), Box<dyn std::error::Error>> {
     
     if use_baseline {
         println!("🔧 Using BASELINE merge algorithm");

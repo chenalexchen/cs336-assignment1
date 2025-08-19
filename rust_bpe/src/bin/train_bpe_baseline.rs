@@ -61,7 +61,7 @@ fn parse_args() -> Result<Args, Box<dyn std::error::Error>> {
 
 /// Save tokenizer outputs to directory
 fn save_tokenizer_outputs(
-    vocab: &HashMap<i32, Vec<u8>>,
+    vocab: &HashMap<u16, Vec<u8>>,
     merges: &[(Vec<u8>, Vec<u8>)],
     output_dir: &str,
     args: &Args,
