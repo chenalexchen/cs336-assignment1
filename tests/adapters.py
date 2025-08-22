@@ -8,7 +8,8 @@ from jaxtyping import Float, Int
 import numpy.typing as npt
 import torch
 from torch import Tensor
-from code.transformers import Linear
+from code.transformers import *
+
 
 def run_linear(
     d_in: int,
@@ -32,6 +33,7 @@ def run_linear(
     linear_layer.weight.data = weights
     return linear_layer.forward(in_features)
 
+
 def run_embedding(
     vocab_size: int,
     d_model: int,
@@ -50,8 +52,9 @@ def run_embedding(
     Returns:
         Float[Tensor, "... d_model"]: Batch of embeddings returned by your Embedding layer.
     """
-
-    raise NotImplementedError
+    emb_layer = Embedding(vocab_size, d_model)
+    emb_layer.emb.data = weights
+    return emb_layer.forward(token_ids)
 
 
 def run_swiglu(
@@ -76,15 +79,11 @@ def run_swiglu(
     Returns:
         Float[Tensor, "... d_model"]: Output embeddings of the same shape as the input embeddings.
     """
-    # Example:
-    # If your state dict keys match, you can use `load_state_dict()`
-    # swiglu.load_state_dict(weights)
-    # You can also manually assign the weights
-    # swiglu.w1.weight.data = w1_weight
-    # swiglu.w2.weight.data = w2_weight
-    # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
-
+    swiglu = SwiGLUFeedForward(d_model, d_ff)
+    swiglu.w1.data = w1_weight
+    swiglu.w2.data = w2_weight
+    swiglu.w3.data = w3_weight
+    return swiglu.forward(in_features)
 
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
@@ -104,7 +103,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -127,7 +126,6 @@ def run_multihead_self_attention(
     Args:
         d_model (int): Dimensionality of the feedforward input and output.
         num_heads (int): Number of heads to use in multi-headed attention.
-        max_seq_len (int): Maximum sequence length to pre-cache if your implementation does that.
         q_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the Q projection
         k_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the K projection
         v_proj_weight (Float[Tensor, "d_k d_in"]): Weights for the V projection
@@ -138,7 +136,14 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    mha = MultiHeadSelfAttention(d_model, num_heads, use_rope=False)
+    
+    mha.q_proj.data = q_proj_weight
+    mha.k_proj.data = k_proj_weight
+    mha.v_proj.data = v_proj_weight
+    mha.o_proj.data = o_proj_weight
+    
+    return mha.forward(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -178,8 +183,16 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
-
+    
+    mha = MultiHeadSelfAttention(d_model, num_heads, use_rope=True, 
+                                 theta_base=theta, max_seq_len=max_seq_len)
+    
+    mha.q_proj.data = q_proj_weight
+    mha.k_proj.data = k_proj_weight
+    mha.v_proj.data = v_proj_weight
+    mha.o_proj.data = o_proj_weight
+    
+    return mha.forward(in_features, token_positions)
 
 def run_rope(
     d_k: int,
@@ -200,7 +213,9 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = RoPE(d_k, max_seq_len, theta)
+    
+    return (rope(in_query_or_key, token_positions))
 
 
 def run_transformer_block(
@@ -378,7 +393,9 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    rms_norm = RMSNorm(d_model, eps)
+    rms_norm.g.data = weights
+    return rms_norm.forward(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -392,7 +409,7 @@ def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
         Float[Tensor,"..."]: of with the same shape as `in_features` with the output of applying
         SiLU to each element.
     """
-    raise NotImplementedError
+    return silu(in_features)
 
 
 def run_get_batch(
@@ -431,7 +448,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(
@@ -562,55 +579,56 @@ def get_tokenizer(
     try:
         # Try to use Rust implementation first
         import rust_bpe
-        
+
         # Convert vocab to the format expected by Rust
         rust_vocab = {k: list(v) for k, v in vocab.items()}
         rust_merges = [(list(t1), list(t2)) for t1, t2 in merges]
-        
+
         rust_tokenizer = rust_bpe.BPETokenizer(rust_vocab, rust_merges, special_tokens)
-        
+
         # Wrap the Rust tokenizer to add missing methods
         class WrappedRustTokenizer:
             def __init__(self, rust_tokenizer):
                 self.rust_tokenizer = rust_tokenizer
-            
+
             def encode(self, text):
                 return self.rust_tokenizer.encode(text)
-            
+
             def decode(self, token_ids):
                 return self.rust_tokenizer.decode(token_ids)
-            
+
             def encode_iterable(self, text_iterable):
                 """Memory-efficient encoding of an iterable of text (e.g., file lines)."""
                 buffer = ""
-                
+
                 for line in text_iterable:
                     buffer += line
-                    
+
                     # Process complete lines or when buffer gets large
-                    if '\n' in buffer or len(buffer) > 1024:
+                    if "\n" in buffer or len(buffer) > 1024:
                         # Split on newlines and keep the last incomplete line in buffer
-                        lines = buffer.split('\n')
+                        lines = buffer.split("\n")
                         buffer = lines[-1]  # Keep incomplete last line
-                        
+
                         # Process complete lines (including empty lines)
                         for complete_line in lines[:-1]:
                             # Always add newline back since split removed it
-                            line_with_newline = complete_line + '\n'
+                            line_with_newline = complete_line + "\n"
                             token_ids = self.rust_tokenizer.encode(line_with_newline)
                             for token_id in token_ids:
                                 yield token_id
-                
+
                 # Process any remaining text in buffer
                 if buffer:
                     token_ids = self.rust_tokenizer.encode(buffer)
                     for token_id in token_ids:
                         yield token_id
-        
+
         return WrappedRustTokenizer(rust_tokenizer)
     except ImportError:
         # Fall back to Python implementation
         from code.bpe_tokenizer import BPETokenizer
+
         return BPETokenizer(vocab, merges, special_tokens)
 
 
@@ -644,15 +662,16 @@ def run_train_bpe(
     try:
         # Try to use Rust implementation first
         import rust_bpe
-        
+
         vocab, merges = rust_bpe.train_bpe(str(input_path), vocab_size, special_tokens)
-        
+
         # Convert back to Python format (bytes instead of list[u8])
         python_vocab = {k: bytes(v) for k, v in vocab.items()}
         python_merges = [(bytes(t1), bytes(t2)) for t1, t2 in merges]
-        
+
         return python_vocab, python_merges
     except ImportError:
         # Fall back to Python implementation
         from code.bpe_tokenizer import train_bpe
+
         return train_bpe(input_path, vocab_size, special_tokens)
