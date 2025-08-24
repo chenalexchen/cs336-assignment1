@@ -109,10 +109,10 @@ class RoPE(nn.Module):
     def _build_rotation_cache(self, max_seq_len: int, device: torch.device = None):
         """Precompute cos and sin matrices for efficiency"""
         # Compute frequencies for each dimension pair
-        freqs = 1.0 / (self.theta_base ** (torch.arange(0, self.d_model, 2).float() / self.d_model))
+        freqs = 1.0 / (self.theta_base ** (torch.arange(0, self.d_model, 2, device=device).float() / self.d_model))
 
         # Create position indices
-        positions = torch.arange(max_seq_len).float()
+        positions = torch.arange(max_seq_len, device=device).float()
 
         # Compute angle matrix: (max_seq_len, d_model // 2)
         angles = torch.outer(positions, freqs)
@@ -139,7 +139,7 @@ class RoPE(nn.Module):
         # Check if we need to expand cache
         max_pos = positions.max().item()
         if max_pos >= self.max_seq_len:
-            self._build_rotation_cache(max_pos + 1)
+            self._build_rotation_cache(max_pos + 1, device=positions.device)
             self.max_seq_len = max_pos + 1
 
         # Get cos and sin for the given positions
@@ -243,7 +243,7 @@ class MultiHeadSelfAttention(nn.Module):
             self.rope = None
 
         # Causal mask for self-attention
-        causal_mask = torch.tril(torch.ones(max_seq_len, max_seq_len))
+        causal_mask = torch.tril(torch.ones(max_seq_len, max_seq_len, device=device))
         self.register_buffer("causal_mask", causal_mask, persistent=False)
 
     def _init_weights(self):
@@ -378,7 +378,7 @@ def cross_entropy(logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
     log_sum_exp = torch.log(sum_exp_logits)  # [batch_size]
 
     # Get the logit for the correct class for each example
-    target_logits = stable_logits[torch.arange(batch_size), targets]  # [batch_size]
+    target_logits = stable_logits[torch.arange(batch_size, device=targets.device), targets]  # [batch_size]
 
     # Cross-entropy: -log(softmax(x_correct)) = -(x_correct - log(sum(exp(x))))
     losses = log_sum_exp - target_logits  # [batch_size]
@@ -484,3 +484,90 @@ def gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: flo
         for p in parameters:
             if p.grad is not None:
                 p.grad.data.mul_(scaling_factor)
+
+
+def get_batch(dataset, batch_size: int, context_length: int, device: str) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Sample random batches from a dataset for language modeling.
+
+    This function supports both in-memory numpy arrays and memory-mapped arrays
+    (created with np.memmap or loaded with mmap_mode='r').
+
+    Args:
+        dataset: 1D numpy array or memmap of integer token IDs in the dataset
+        batch_size: Desired batch size to sample
+        context_length: Desired context length of each sampled example
+        device: PyTorch device string (e.g., 'cpu' or 'cuda:0')
+
+    Returns:
+        Tuple of torch.LongTensors of shape (batch_size, context_length):
+        - input sequences (x)
+        - corresponding language modeling labels (y = x shifted by 1)
+    """
+    # Calculate the number of valid starting positions
+    # We need context_length + 1 tokens total to create both x and y sequences
+    max_start_idx = len(dataset) - context_length
+
+    if max_start_idx <= 0:
+        raise ValueError(f"Dataset length ({len(dataset)}) must be greater than context_length ({context_length})")
+
+    # Randomly sample starting indices for each batch item
+    start_indices = torch.randint(0, max_start_idx, (batch_size,))
+
+    # Pre-allocate tensors for efficiency
+    x = torch.zeros(batch_size, context_length, dtype=torch.long)
+    y = torch.zeros(batch_size, context_length, dtype=torch.long)
+
+    for i, start_idx in enumerate(start_indices):
+        # Extract the sequence of length context_length + 1
+        # This works efficiently with both regular arrays and memory-mapped arrays
+        sequence = dataset[start_idx : start_idx + context_length + 1]
+
+        # Validate the sequence doesn't contain unexpected values
+        # This is especially important with memory-mapped data
+        if len(sequence) != context_length + 1:
+            raise ValueError(f"Sequence at index {start_idx} has length {len(sequence)}, expected {context_length + 1}")
+
+        # Input sequence: first context_length tokens
+        x[i] = torch.from_numpy(sequence[:-1].copy()).long()
+        # Target sequence: last context_length tokens (shifted by 1)
+        y[i] = torch.from_numpy(sequence[1:].copy()).long()
+
+    # Move tensors to the specified device
+    return x.to(device), y.to(device)
+
+
+def load_dataset(file_path: str, dtype=None, mmap_mode: str = "r"):
+    """
+    Load a dataset from disk with optional memory mapping for large files.
+
+    Args:
+        file_path: Path to the dataset file (.npy format)
+        dtype: Data type of the array (e.g., np.uint16, np.int32)
+        mmap_mode: Memory map mode ('r' for read-only, None for regular loading)
+
+    Returns:
+        Numpy array or memmap object containing the dataset
+    """
+    import numpy as np
+
+    if mmap_mode is not None:
+        # Load as memory-mapped array for large datasets
+        dataset = np.load(file_path, mmap_mode=mmap_mode)
+
+        # Verify data integrity for memory-mapped arrays
+        if len(dataset) == 0:
+            raise ValueError(f"Dataset {file_path} is empty")
+
+        print(f"Loaded memory-mapped dataset: {file_path}")
+        print(f"  Shape: {dataset.shape}")
+        print(f"  Dtype: {dataset.dtype}")
+        print(f"  First few values: {dataset[:10].tolist()}")
+        print(f"  Value range: [{dataset.min()}, {dataset.max()}]")
+
+        return dataset
+    else:
+        # Load entire dataset into memory
+        dataset = np.load(file_path)
+        print(f"Loaded in-memory dataset: {file_path} (shape: {dataset.shape}, dtype: {dataset.dtype})")
+        return dataset

@@ -85,6 +85,7 @@ def run_swiglu(
     swiglu.w3.data = w3_weight
     return swiglu.forward(in_features)
 
+
 def run_scaled_dot_product_attention(
     Q: Float[Tensor, " ... queries d_k"],
     K: Float[Tensor, " ... keys d_k"],
@@ -137,12 +138,12 @@ def run_multihead_self_attention(
         implementation with the given QKV projection weights and input features.
     """
     mha = MultiHeadSelfAttention(d_model, num_heads, use_rope=False)
-    
+
     mha.q_proj.data = q_proj_weight
     mha.k_proj.data = k_proj_weight
     mha.v_proj.data = v_proj_weight
     mha.o_proj.data = o_proj_weight
-    
+
     return mha.forward(in_features)
 
 
@@ -183,16 +184,16 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    
-    mha = MultiHeadSelfAttention(d_model, num_heads, use_rope=True, 
-                                 theta_base=theta, max_seq_len=max_seq_len)
-    
+
+    mha = MultiHeadSelfAttention(d_model, num_heads, use_rope=True, theta_base=theta, max_seq_len=max_seq_len)
+
     mha.q_proj.data = q_proj_weight
     mha.k_proj.data = k_proj_weight
     mha.v_proj.data = v_proj_weight
     mha.o_proj.data = o_proj_weight
-    
+
     return mha.forward(in_features, token_positions)
+
 
 def run_rope(
     d_k: int,
@@ -214,8 +215,8 @@ def run_rope(
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
     rope = RoPE(d_k, max_seq_len, theta)
-    
-    return (rope(in_query_or_key, token_positions))
+
+    return rope(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -289,16 +290,16 @@ def run_transformer_block(
         running the Transformer block on the input features while using RoPE.
     """
     transformer_block = Transformer(d_model, num_heads, d_ff, max_seq_len, theta)
-    transformer_block.attention.q_proj.data = weights['attn.q_proj.weight']
-    transformer_block.attention.k_proj.data = weights['attn.k_proj.weight']
-    transformer_block.attention.v_proj.data = weights['attn.v_proj.weight']
-    transformer_block.attention.o_proj.data = weights['attn.output_proj.weight']
-    transformer_block.rms_attn.g.data = weights['ln1.weight']
-    transformer_block.ffn.w1.data = weights['ffn.w1.weight']
-    transformer_block.ffn.w2.data = weights['ffn.w2.weight']
-    transformer_block.ffn.w3.data = weights['ffn.w3.weight']
-    transformer_block.rms_ffn.g.data = weights['ln2.weight']
-    
+    transformer_block.attention.q_proj.data = weights["attn.q_proj.weight"]
+    transformer_block.attention.k_proj.data = weights["attn.k_proj.weight"]
+    transformer_block.attention.v_proj.data = weights["attn.v_proj.weight"]
+    transformer_block.attention.o_proj.data = weights["attn.output_proj.weight"]
+    transformer_block.rms_attn.g.data = weights["ln1.weight"]
+    transformer_block.ffn.w1.data = weights["ffn.w1.weight"]
+    transformer_block.ffn.w2.data = weights["ffn.w2.weight"]
+    transformer_block.ffn.w3.data = weights["ffn.w3.weight"]
+    transformer_block.rms_ffn.g.data = weights["ln2.weight"]
+
     return transformer_block(in_features)
 
 
@@ -389,36 +390,36 @@ def run_transformer_lm(
         theta=rope_theta,
         vocab_size=vocab_size,
         context_length=context_length,
-        num_layers=num_layers
+        num_layers=num_layers,
     )
-    
+
     # Set token embedding weights
-    model.token_emb.emb.data = weights['token_embeddings.weight']
-    
+    model.token_emb.emb.data = weights["token_embeddings.weight"]
+
     # Set weights for each transformer layer
     for layer_idx in range(num_layers):
-        layer_prefix = f'layers.{layer_idx}'
+        layer_prefix = f"layers.{layer_idx}"
         transformer_block = model.transformers[layer_idx]
-        
+
         # Set attention weights
-        transformer_block.attention.q_proj.data = weights[f'{layer_prefix}.attn.q_proj.weight']
-        transformer_block.attention.k_proj.data = weights[f'{layer_prefix}.attn.k_proj.weight']
-        transformer_block.attention.v_proj.data = weights[f'{layer_prefix}.attn.v_proj.weight']
-        transformer_block.attention.o_proj.data = weights[f'{layer_prefix}.attn.output_proj.weight']
-        
+        transformer_block.attention.q_proj.data = weights[f"{layer_prefix}.attn.q_proj.weight"]
+        transformer_block.attention.k_proj.data = weights[f"{layer_prefix}.attn.k_proj.weight"]
+        transformer_block.attention.v_proj.data = weights[f"{layer_prefix}.attn.v_proj.weight"]
+        transformer_block.attention.o_proj.data = weights[f"{layer_prefix}.attn.output_proj.weight"]
+
         # Set normalization weights
-        transformer_block.rms_attn.g.data = weights[f'{layer_prefix}.ln1.weight']
-        transformer_block.rms_ffn.g.data = weights[f'{layer_prefix}.ln2.weight']
-        
+        transformer_block.rms_attn.g.data = weights[f"{layer_prefix}.ln1.weight"]
+        transformer_block.rms_ffn.g.data = weights[f"{layer_prefix}.ln2.weight"]
+
         # Set FFN weights
-        transformer_block.ffn.w1.data = weights[f'{layer_prefix}.ffn.w1.weight']
-        transformer_block.ffn.w2.data = weights[f'{layer_prefix}.ffn.w2.weight']
-        transformer_block.ffn.w3.data = weights[f'{layer_prefix}.ffn.w3.weight']
-    
+        transformer_block.ffn.w1.data = weights[f"{layer_prefix}.ffn.w1.weight"]
+        transformer_block.ffn.w2.data = weights[f"{layer_prefix}.ffn.w2.weight"]
+        transformer_block.ffn.w3.data = weights[f"{layer_prefix}.ffn.w3.weight"]
+
     # Set final layer norm and language model head weights
-    model.ln_final.g.data = weights['ln_final.weight']
-    model.lm_head.weight.data = weights['lm_head.weight']
-    
+    model.ln_final.g.data = weights["ln_final.weight"]
+    model.lm_head.weight.data = weights["lm_head.weight"]
+
     # Forward pass
     return model.forward(in_indices)
 
@@ -482,7 +483,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
-    raise NotImplementedError
+    return get_batch(dataset, batch_size, context_length, device)
 
 
 def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, " ..."]:
@@ -563,8 +564,7 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
-    return cosine_learning_rate_schedule(it, max_learning_rate, min_learning_rate,
-                                         warmup_iters, cosine_cycle_iters)
+    return cosine_learning_rate_schedule(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
 
 
 def run_save_checkpoint(
