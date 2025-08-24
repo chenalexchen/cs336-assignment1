@@ -4,7 +4,8 @@ import math
 from einops import einsum
 from jaxtyping import Float
 from collections.abc import Callable, Iterable
-from typing import Optional
+from typing import Optional, IO, BinaryIO
+import os
 
 
 class Linear(nn.Module):
@@ -571,3 +572,27 @@ def load_dataset(file_path: str, dtype=None, mmap_mode: str = "r"):
         dataset = np.load(file_path)
         print(f"Loaded in-memory dataset: {file_path} (shape: {dataset.shape}, dtype: {dataset.dtype})")
         return dataset
+
+
+def save_checkpoint(
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+    iteration: int,
+    out: str | os.PathLike | BinaryIO | IO[bytes],
+):
+    state = dict()
+    state["model"] = model.state_dict()
+    state["optimizer"] = optimizer.state_dict()
+    state["iteration"] = iteration
+    torch.save(state, out)
+
+
+def load_checkpoint(
+    src: str | os.PathLike | BinaryIO | IO[bytes],
+    model: torch.nn.Module,
+    optimizer: torch.optim.Optimizer,
+):
+    state = torch.load(src)
+    model.load_state_dict(state["model"])
+    optimizer.load_state_dict(state["optimizer"])
+    return state["iteration"]
