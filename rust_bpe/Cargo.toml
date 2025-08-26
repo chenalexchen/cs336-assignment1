@@ -43,6 +43,14 @@ path = "src/bin/simd_profiler.rs"
 name = "ultra_profiler_u16"
 path = "src/bin/ultra_profiler_u16.rs"
 
+[[bin]]
+name = "train_bpe_tokenizer"
+path = "src/bin/train_bpe_tokenizer.rs"
+
+[[bin]]
+name = "bpe_tokenize"
+path = "src/bin/bpe_tokenize.rs"
+
 [dependencies]
 pyo3 = { version = "0.22", features = ["extension-module"], optional = true }
 regex = "1.10"
@@ -51,6 +59,7 @@ rustc-hash = "2.0"
 memchr = "2.7"
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.4", features = ["derive"] }
 
 [dev-dependencies]
 tempfile = "3.8"
