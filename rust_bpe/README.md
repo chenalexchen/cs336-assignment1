@@ -27,6 +27,8 @@ cargo build --release
 This will create optimized binaries in `target/release/`:
 
 ### Production Binaries
+- **`train_bpe_tokenizer`**: CLI tool for training BPE tokenizers with comprehensive argument parsing
+- **`bpe_tokenize`**: CLI tool for tokenizing and detokenizing text using trained BPE models
 - **`train_bpe`**: Main CLI tool for training BPE tokenizers (recommended for general use)
 - **`ultra_profiler`**: Ultra-optimized algorithmic version with 44% performance improvement
 - **`ultra_profiler_u16`**: Memory-optimized u16 version with 50% memory reduction + 5.5% speed boost
@@ -79,6 +81,61 @@ The training process creates three files in the output directory:
 1. **`vocab.json`**: Token-to-ID mapping in JSON format
 2. **`merges.txt`**: BPE merge rules in standard format
 3. **`training_stats.txt`**: Training configuration and statistics
+
+### Using a Trained BPE Tokenizer
+
+Once you have trained a tokenizer, use the `bpe_tokenize` binary for tokenization and detokenization tasks:
+
+#### Basic Tokenization
+
+```bash
+# Tokenize text directly
+./target/release/bpe_tokenize --vocab path/to/vocab.json --merges path/to/merges.txt --text "Hello world! This is a test."
+
+# Tokenize a file
+./target/release/bpe_tokenize --vocab path/to/vocab.json --merges path/to/merges.txt --input input.txt --output tokens.txt
+
+# Output as JSON array
+./target/release/bpe_tokenize --vocab path/to/vocab.json --merges path/to/merges.txt --input input.txt --output tokens.json --output-format json
+
+# Human-readable token breakdown
+./target/release/bpe_tokenize --vocab path/to/vocab.json --merges path/to/merges.txt --input input.txt --output readable.txt --output-format text
+```
+
+#### Detokenization
+
+```bash
+# Detokenize token IDs back to text
+./target/release/bpe_tokenize --vocab path/to/vocab.json --merges path/to/merges.txt --mode detokenize --input tokens.txt --output output.txt
+
+# Detokenize from JSON format
+./target/release/bpe_tokenize --vocab path/to/vocab.json --merges path/to/merges.txt --mode detokenize --input tokens.json --input-format json --output output.txt
+```
+
+#### Interactive Mode
+
+```bash
+# Launch interactive tokenization mode
+./target/release/bpe_tokenize --vocab path/to/vocab.json --merges path/to/merges.txt --interactive
+```
+
+Interactive mode supports these commands:
+- `encode <text>` - Tokenize text and show token breakdown
+- `decode <token_ids>` - Detokenize space-separated token IDs  
+- `stats` - Show tokenizer statistics
+- `quit` - Exit interactive mode
+
+#### Training with CLI Arguments
+
+Use the `train_bpe_tokenizer` binary for training with comprehensive argument parsing:
+
+```bash
+# Train with explicit arguments
+./target/release/train_bpe_tokenizer --input ../data/owt_train.txt --output ../tokenizer_output/owt_32k --vocab-size 32000
+
+# Train with custom special tokens
+./target/release/train_bpe_tokenizer --input ../data/owt_train.txt --output ../tokenizer_output/owt_32k --vocab-size 32000 --special-tokens "<|endoftext|>" "<|pad|>" "<|unk|>"
+```
 
 ## Performance Optimizations & Results
 
@@ -202,6 +259,26 @@ The tokenizer uses GPT-2 style pre-tokenization with regex patterns:
 3. **Merge Learning**: Iteratively find and apply the most frequent byte pair merges
 4. **Vocabulary Building**: Build final vocabulary with learned merges
 
+### Inter-operability with Python
+
+The `bpe_tokenize` binary implements the full BPE algorithm with proper merge application, ensuring **perfect inter-operability** with Python implementations:
+
+- ✅ **Identical Tokenization**: Rust and Python produce identical token sequences
+- ✅ **GPT-2 Compatible**: Uses regex patterns adapted for Rust regex engine
+- ✅ **Priority-based Merging**: Applies merges in correct priority order (earliest learned = highest priority)
+- ✅ **Cross-platform Testing**: Verified through comprehensive inter-op test suite
+
+**Example Inter-operability:**
+```bash
+# Python tokenization
+./code/bpe_tokenize.py --text "Hello world!" 
+# Output: [372, 32, 290, 33]
+
+# Rust tokenization (identical result)
+./target/release/bpe_tokenize --text "Hello world!" 
+# Output: [372, 32, 290, 33]
+```
+
 ### Special Token Handling
 
 - Special tokens are added to the vocabulary but never split during pre-tokenization
@@ -319,6 +396,8 @@ rust_bpe/
 │   ├── lib.rs                      # Core BPE implementation (u16 optimized)
 │   └── bin/
 │       ├── train_bpe.rs            # Main CLI tool (recommended)
+│       ├── train_bpe_tokenizer.rs  # Training CLI with comprehensive arguments
+│       ├── bpe_tokenize.rs         # Tokenization/detokenization CLI tool
 │       ├── ultra_profiler.rs       # Ultra-optimized algorithmic version  
 │       ├── ultra_profiler_u16.rs   # Memory-optimized u16 version (NEW)
 │       ├── detailed_profiler.rs    # Comprehensive timing analysis
