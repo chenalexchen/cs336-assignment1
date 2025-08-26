@@ -1,4 +1,5 @@
 use clap::Parser;
+use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -56,12 +57,143 @@ struct Args {
     no_stats: bool,
 }
 
+/// BPE tokenizer structure
+struct BPETokenizer {
+    vocab: HashMap<u16, Vec<u8>>,         // token_id -> token_bytes
+    bytes_to_id: HashMap<Vec<u8>, u16>,   // token_bytes -> token_id
+    merges: Vec<(Vec<u8>, Vec<u8>)>,      // merge rules in order
+    merge_priorities: HashMap<(Vec<u8>, Vec<u8>), usize>, // merge -> priority index
+    special_tokens: Vec<String>,
+    pat: Regex,                           // pre-tokenization pattern
+}
+
+impl BPETokenizer {
+    fn new(
+        vocab: HashMap<u16, Vec<u8>>, 
+        merges: Vec<(Vec<u8>, Vec<u8>)>,
+        special_tokens: Vec<String>
+    ) -> Self {
+        // Create reverse vocab lookup
+        let mut bytes_to_id = HashMap::new();
+        for (&token_id, token_bytes) in &vocab {
+            bytes_to_id.insert(token_bytes.clone(), token_id);
+        }
+
+        // Pre-compute merge priorities (earlier merges have higher priority = lower index)
+        let mut merge_priorities = HashMap::new();
+        for (i, merge) in merges.iter().enumerate() {
+            let merged_token = [merge.0.clone(), merge.1.clone()].concat();
+            if bytes_to_id.contains_key(&merged_token) {
+                merge_priorities.insert(merge.clone(), i);
+            }
+        }
+
+        // Pre-compile regex pattern (GPT-2 style, adapted for Rust regex limitations)
+        // Note: Rust regex doesn't support lookahead, so we simplify the whitespace handling
+        let pat = Regex::new(r"'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+")
+            .expect("Failed to compile regex pattern");
+
+        BPETokenizer {
+            vocab,
+            bytes_to_id,
+            merges,
+            merge_priorities,
+            special_tokens,
+            pat,
+        }
+    }
+
+    fn encode(&self, text: &str) -> Vec<u16> {
+        let mut result = Vec::new();
+
+        if !self.special_tokens.is_empty() {
+            // Handle special tokens by splitting text preserving them
+            // For simplicity in this implementation, we'll just handle text without special tokens
+            // A full implementation would need more complex special token handling
+            result.extend(self.encode_text_part(text));
+        } else {
+            result.extend(self.encode_text_part(text));
+        }
+
+        result
+    }
+
+    fn encode_text_part(&self, text: &str) -> Vec<u16> {
+        let mut result = Vec::new();
+
+        // Process each pre-token separately using the compiled pattern
+        for captures in self.pat.find_iter(text) {
+            let pre_token = captures.as_str();
+            if pre_token.is_empty() {
+                continue;
+            }
+
+            // Start with byte-level tokens for this pre-token
+            let mut tokens: Vec<Vec<u8>> = pre_token.bytes()
+                .map(|b| vec![b])
+                .collect();
+
+            // Apply merges using priority-based approach
+            while tokens.len() > 1 {
+                // Find the best merge available in current token sequence
+                let mut best_merge: Option<(Vec<u8>, Vec<u8>)> = None;
+                let mut best_priority = self.merges.len(); // Higher than any real priority
+                let mut best_pos = 0;
+
+                for i in 0..tokens.len() - 1 {
+                    let pair = (tokens[i].clone(), tokens[i + 1].clone());
+                    if let Some(&priority) = self.merge_priorities.get(&pair) {
+                        if priority < best_priority {
+                            best_merge = Some(pair);
+                            best_priority = priority;
+                            best_pos = i;
+                        }
+                    }
+                }
+
+                if best_merge.is_none() {
+                    break;
+                }
+
+                // Apply the best merge
+                let merged_token = [tokens[best_pos].clone(), tokens[best_pos + 1].clone()].concat();
+                let mut new_tokens = tokens[..best_pos].to_vec();
+                new_tokens.push(merged_token);
+                new_tokens.extend_from_slice(&tokens[best_pos + 2..]);
+                tokens = new_tokens;
+            }
+
+            // Convert to token IDs and add to result
+            for token in tokens {
+                if let Some(&token_id) = self.bytes_to_id.get(&token) {
+                    result.push(token_id);
+                }
+            }
+        }
+
+        result
+    }
+
+    fn decode(&self, token_ids: &[u16]) -> String {
+        let mut bytes = Vec::new();
+        for &token_id in token_ids {
+            if let Some(token_bytes) = self.vocab.get(&token_id) {
+                bytes.extend_from_slice(token_bytes);
+            } else if token_id < 256 {
+                // Fallback for byte tokens
+                bytes.push(token_id as u8);
+            }
+        }
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+}
+
 /// Load a BPE tokenizer from vocab and merges files
 fn load_tokenizer(
     vocab_path: &str,
     merges_path: &str,
     special_tokens: &[String],
-) -> Result<(HashMap<u16, Vec<u8>>, Vec<(Vec<u8>, Vec<u8>)>), Box<dyn std::error::Error>> {
+) -> Result<BPETokenizer, Box<dyn std::error::Error>> {
     println!("📁 Loading tokenizer from {} and {}", vocab_path, merges_path);
 
     // Load vocabulary
@@ -97,13 +229,12 @@ fn load_tokenizer(
     println!("✅ Loaded tokenizer: {} vocab, {} merges, special tokens: {:?}", 
              vocab.len(), merges.len(), special_tokens);
 
-    Ok((vocab, merges))
+    Ok(BPETokenizer::new(vocab, merges, special_tokens.to_vec()))
 }
 
 /// Tokenize an entire file
 fn tokenize_file(
-    vocab: &HashMap<u16, Vec<u8>>,
-    _merges: &[(Vec<u8>, Vec<u8>)],
+    tokenizer: &BPETokenizer,
     input_path: &str,
     output_path: Option<&str>,
     output_format: &str,
@@ -115,9 +246,8 @@ fn tokenize_file(
     let text = std::fs::read_to_string(input_path)?;
     let start_time = Instant::now();
 
-    // For this demo, we'll do a simple byte-level tokenization
-    // In a full implementation, you'd implement the full BPE algorithm
-    let token_ids = simple_tokenize(&text, vocab);
+    // Use the proper BPE tokenizer
+    let token_ids = tokenizer.encode(&text);
 
     let tokenization_time = start_time.elapsed();
 
@@ -151,7 +281,7 @@ fn tokenize_file(
                 output.push_str("Token ID : Token String\n");
                 output.push_str("==================================================\n");
                 for (i, &token_id) in token_ids.iter().enumerate().take(100) {
-                    if let Some(token_bytes) = vocab.get(&token_id) {
+                    if let Some(token_bytes) = tokenizer.vocab.get(&token_id) {
                         let token_str = String::from_utf8_lossy(token_bytes);
                         output.push_str(&format!("{}: {} -> {:?}\n", i, token_id, token_str));
                     }
@@ -174,7 +304,7 @@ fn tokenize_file(
 
 /// Detokenize token IDs back to text
 fn detokenize_file(
-    vocab: &HashMap<u16, Vec<u8>>,
+    tokenizer: &BPETokenizer,
     input_path: &str,
     output_path: Option<&str>,
     input_format: &str,
@@ -206,7 +336,7 @@ fn detokenize_file(
     let start_time = Instant::now();
 
     // Detokenize
-    let text = simple_detokenize(&token_ids, vocab);
+    let text = tokenizer.decode(&token_ids);
 
     let detokenization_time = start_time.elapsed();
 
@@ -227,8 +357,7 @@ fn detokenize_file(
 
 /// Interactive tokenization mode
 fn interactive_mode(
-    vocab: &HashMap<u16, Vec<u8>>,
-    merges: &[(Vec<u8>, Vec<u8>)],
+    tokenizer: &BPETokenizer,
 ) {
     println!("\n🤖 Interactive BPE Tokenization Mode");
     println!("Commands:");
@@ -262,7 +391,7 @@ fn interactive_mode(
         match cmd.as_str() {
             "encode" if parts.len() > 1 => {
                 let text = parts[1];
-                let token_ids = simple_tokenize(text, vocab);
+                let token_ids = tokenizer.encode(text);
                 println!("Text: \"{}\"", text);
                 println!("Token IDs: {:?}", token_ids);
                 println!("Length: {} tokens", token_ids.len());
@@ -271,7 +400,7 @@ fn interactive_mode(
                 if token_ids.len() <= 20 {
                     println!("Token breakdown:");
                     for (i, &token_id) in token_ids.iter().enumerate() {
-                        if let Some(token_bytes) = vocab.get(&token_id) {
+                        if let Some(token_bytes) = tokenizer.vocab.get(&token_id) {
                             let token_str = String::from_utf8_lossy(token_bytes);
                             println!("  {}: {} -> {:?}", i, token_id, token_str);
                         }
@@ -284,7 +413,7 @@ fn interactive_mode(
                     .collect::<Result<Vec<_>, _>>()
                 {
                     Ok(token_ids) => {
-                        let text = simple_detokenize(&token_ids, vocab);
+                        let text = tokenizer.decode(&token_ids);
                         println!("Token IDs: {:?}", token_ids);
                         println!("Text: \"{}\"", text);
                     }
@@ -294,8 +423,8 @@ fn interactive_mode(
                 }
             }
             "stats" => {
-                let vocab_size = vocab.len();
-                let merge_count = merges.len();
+                let vocab_size = tokenizer.vocab.len();
+                let merge_count = tokenizer.merges.len();
                 println!("Tokenizer statistics:");
                 println!("  • Vocabulary size: {}", vocab_size);
                 println!("  • Merge rules: {}", merge_count);
@@ -309,28 +438,6 @@ fn interactive_mode(
     println!("\nExiting interactive mode...");
 }
 
-/// Simple tokenization (demo implementation)
-/// In a full implementation, this would use the complete BPE algorithm
-fn simple_tokenize(text: &str, _vocab: &HashMap<u16, Vec<u8>>) -> Vec<u16> {
-    // This is a simplified tokenization for demo purposes
-    // A full implementation would implement the complete BPE algorithm with merge rules
-    text.bytes().map(|b| b as u16).collect()
-}
-
-/// Simple detokenization (demo implementation)
-fn simple_detokenize(token_ids: &[u16], vocab: &HashMap<u16, Vec<u8>>) -> String {
-    // This is a simplified detokenization for demo purposes
-    let mut bytes = Vec::new();
-    for &token_id in token_ids {
-        if let Some(token_bytes) = vocab.get(&token_id) {
-            bytes.extend_from_slice(token_bytes);
-        } else if token_id < 256 {
-            // Fallback for byte tokens
-            bytes.push(token_id as u8);
-        }
-    }
-    String::from_utf8_lossy(&bytes).to_string()
-}
 
 fn main() {
     let args = Args::parse();
@@ -350,8 +457,8 @@ fn main() {
     }
 
     // Load tokenizer
-    let (vocab, merges) = match load_tokenizer(&args.vocab, &args.merges, &args.special_tokens) {
-        Ok((vocab, merges)) => (vocab, merges),
+    let tokenizer = match load_tokenizer(&args.vocab, &args.merges, &args.special_tokens) {
+        Ok(tokenizer) => tokenizer,
         Err(e) => {
             eprintln!("❌ Error loading tokenizer: {}", e);
             std::process::exit(1);
@@ -360,21 +467,21 @@ fn main() {
 
     // Interactive mode
     if args.interactive {
-        interactive_mode(&vocab, &merges);
+        interactive_mode(&tokenizer);
         return;
     }
 
     // Direct text input
     if let Some(text) = &args.text {
         println!("\n🔤 Tokenizing direct input: \"{}\"", text);
-        let token_ids = simple_tokenize(text, &vocab);
+        let token_ids = tokenizer.encode(text);
         println!("Token IDs: {:?}", token_ids);
         println!("Token count: {}", token_ids.len());
 
         // Show token breakdown
         println!("Token breakdown:");
         for (i, &token_id) in token_ids.iter().enumerate() {
-            if let Some(token_bytes) = vocab.get(&token_id) {
+            if let Some(token_bytes) = tokenizer.vocab.get(&token_id) {
                 let token_str = String::from_utf8_lossy(token_bytes);
                 println!("  {}: {} -> {:?}", i, token_id, token_str);
             }
@@ -400,7 +507,7 @@ fn main() {
 
     match args.mode.as_str() {
         "tokenize" => {
-            match tokenize_file(&vocab, &merges, input_path, args.output.as_deref(), &args.output_format, show_stats) {
+            match tokenize_file(&tokenizer, input_path, args.output.as_deref(), &args.output_format, show_stats) {
                 Ok(token_ids) => {
                     println!("✅ Tokenization completed: {} tokens", token_ids.len());
                 }
@@ -411,7 +518,7 @@ fn main() {
             }
         }
         "detokenize" => {
-            match detokenize_file(&vocab, input_path, args.output.as_deref(), &args.input_format) {
+            match detokenize_file(&tokenizer, input_path, args.output.as_deref(), &args.input_format) {
                 Ok(text) => {
                     println!("✅ Detokenization completed: {} characters", text.len());
                 }
