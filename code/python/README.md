@@ -6,13 +6,13 @@ Complete implementation of transformer language models from scratch, including B
 
 ```bash
 # 1. Train a BPE tokenizer
-uv run python train_bpe_tokenizer.py --input data/corpus.txt --output tokenizer --vocab-size 32000
+uv run python code/python/train_bpe_tokenizer.py --input data/corpus.txt --output tokenizer --vocab-size 32000
 
 # 2. Train a transformer model
-uv run python train.py --train_data data/train.npy --val_data data/val.npy --vocab_size 32000
+uv run python code/python/train.py --train_data data/train.npy --val_data data/val.npy --vocab_size 32000
 
 # 3. Generate text
-uv run python decode.py --checkpoint checkpoints/final_checkpoint.pt --prompt "Once upon a time"
+uv run python code/python/decode.py --checkpoint checkpoints/final_checkpoint.pt --prompt "Once upon a time"
 ```
 
 ---
@@ -39,7 +39,7 @@ Train Byte Pair Encoding tokenizers for your text data.
 #### Basic Usage
 ```bash
 # Train with default settings
-uv run python train_bpe_tokenizer.py \
+uv run python code/python/train_bpe_tokenizer.py \
     --input data/corpus.txt \
     --output my_tokenizer \
     --vocab-size 32000
@@ -48,7 +48,7 @@ uv run python train_bpe_tokenizer.py \
 #### Complete Example
 ```bash
 # Train tokenizer for transformer models
-uv run python train_bpe_tokenizer.py \
+uv run python code/python/train_bpe_tokenizer.py \
     --input data/tinystories_train.txt \
     --output tokenizer_output \
     --vocab-size 32000 \
@@ -62,7 +62,7 @@ uv run python train_bpe_tokenizer.py \
 **Full Training (default)**
 ```bash
 # Complete training in one step
-uv run python train_bpe_tokenizer.py \
+uv run python code/python/train_bpe_tokenizer.py \
     --input data/corpus.txt \
     --output my_tokenizer \
     --vocab-size 32000 \
@@ -72,7 +72,7 @@ uv run python train_bpe_tokenizer.py \
 **Extract Word Frequencies Only**
 ```bash
 # Extract and save word frequencies without training
-uv run python train_bpe_tokenizer.py \
+uv run python code/python/train_bpe_tokenizer.py \
     --input data/corpus.txt \
     --word-freqs-file word_freqs.json \
     --mode extract-freqs
@@ -81,7 +81,7 @@ uv run python train_bpe_tokenizer.py \
 **Train from Pre-extracted Frequencies**
 ```bash
 # Train BPE from previously extracted word frequencies
-uv run python train_bpe_tokenizer.py \
+uv run python code/python/train_bpe_tokenizer.py \
     --word-freqs-file word_freqs.json \
     --output my_tokenizer \
     --vocab-size 32000 \
@@ -121,14 +121,14 @@ Tokenize and detokenize text using trained BPE tokenizers.
 **1. File Tokenization**
 ```bash
 # Tokenize file to token IDs
-uv run python bpe_tokenize.py \
+uv run python code/python/bpe_tokenize.py \
     --vocab tokenizer_output/vocab.json \
     --merges tokenizer_output/merges.txt \
     --input document.txt \
     --output document.tokens
 
 # Tokenize to JSON format
-uv run python bpe_tokenize.py \
+uv run python code/python/bpe_tokenize.py \
     --vocab my_tokenizer/vocab.json \
     --merges my_tokenizer/merges.txt \
     --input corpus.txt \
@@ -139,7 +139,7 @@ uv run python bpe_tokenize.py \
 **2. File Detokenization**
 ```bash
 # Convert token IDs back to text
-uv run python bpe_tokenize.py \
+uv run python code/python/bpe_tokenize.py \
     --vocab my_tokenizer/vocab.json \
     --merges my_tokenizer/merges.txt \
     --input document.tokens \
@@ -150,7 +150,7 @@ uv run python bpe_tokenize.py \
 **3. Direct Text Processing**
 ```bash
 # Tokenize text directly
-uv run python bpe_tokenize.py \
+uv run python code/python/bpe_tokenize.py \
     --vocab my_tokenizer/vocab.json \
     --merges my_tokenizer/merges.txt \
     --text "Hello world! This is a test."
@@ -159,7 +159,7 @@ uv run python bpe_tokenize.py \
 **4. Interactive Mode**
 ```bash
 # Interactive tokenization session
-uv run python bpe_tokenize.py \
+uv run python code/python/bpe_tokenize.py \
     --vocab my_tokenizer/vocab.json \
     --merges my_tokenizer/merges.txt \
     --interactive
@@ -195,7 +195,7 @@ Train transformer language models with comprehensive hyperparameter control.
 #### Quick Start
 ```bash
 # Basic training run
-uv run python train.py \
+uv run python code/python/train.py \
     --train_data data/train.npy \
     --val_data data/val.npy \
     --d_model 512 \
@@ -248,7 +248,7 @@ uv run python train.py \
 
 **Small Model (Testing)**
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --train_data data/train.npy \
     --val_data data/val.npy \
     --d_model 128 \
@@ -262,7 +262,7 @@ uv run python train.py \
 
 **Large Model (GTX 1080 Ti)**
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --train_data data/train.npy \
     --val_data data/val.npy \
     --d_model 768 \
@@ -276,7 +276,7 @@ uv run python train.py \
 
 **Resume Training**
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --train_data data/train.npy \
     --val_data data/val.npy \
     --resume_from checkpoints/checkpoint_step_50000.pt \
@@ -285,7 +285,7 @@ uv run python train.py \
 
 **Weights & Biases Logging**
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --train_data data/train.npy \
     --val_data data/val.npy \
     --use_wandb \
@@ -316,13 +316,13 @@ Generate text from trained transformer models with various sampling strategies.
 **Single Text Generation**
 ```bash
 # Basic generation with minimal arguments
-uv run python decode.py \
+uv run python code/python/decode.py \
     --checkpoint checkpoints/final_checkpoint.pt \
     --prompt "Once upon a time" \
     --max-tokens 50
 
 # With custom sampling parameters  
-uv run python decode.py \
+uv run python code/python/decode.py \
     --checkpoint checkpoints/checkpoint_step_10000.pt \
     --prompt "The future of AI is" \
     --max-tokens 100 \
@@ -334,7 +334,7 @@ uv run python decode.py \
 **Interactive Mode**
 ```bash
 # Start interactive session for multiple prompts
-uv run python decode.py \
+uv run python code/python/decode.py \
     --checkpoint checkpoints/final_checkpoint.pt \
     --interactive \
     --temperature 0.7 \
@@ -344,7 +344,7 @@ uv run python decode.py \
 **Reproducible Generation**
 ```bash
 # Set seed for consistent results
-uv run python decode.py \
+uv run python code/python/decode.py \
     --checkpoint checkpoints/final_checkpoint.pt \
     --prompt "Hello world" \
     --seed 42 \
@@ -408,7 +408,7 @@ cd ..
 
 ### 2. Train BPE Tokenizer
 ```bash
-uv run python train_bpe_tokenizer.py \
+uv run python code/python/train_bpe_tokenizer.py \
     --input data/TinyStoriesV2-GPT4-train.txt \
     --output tokenizer_tinystories \
     --vocab-size 32000 \
@@ -418,7 +418,7 @@ uv run python train_bpe_tokenizer.py \
 ### 3. Tokenize Training Data
 ```bash
 # Tokenize training data
-uv run python bpe_tokenize.py \
+uv run python code/python/bpe_tokenize.py \
     --vocab tokenizer_tinystories/vocab.json \
     --merges tokenizer_tinystories/merges.txt \
     --input data/TinyStoriesV2-GPT4-train.txt \
@@ -426,7 +426,7 @@ uv run python bpe_tokenize.py \
     --output-format json
 
 # Tokenize validation data
-uv run python bpe_tokenize.py \
+uv run python code/python/bpe_tokenize.py \
     --vocab tokenizer_tinystories/vocab.json \
     --merges tokenizer_tinystories/merges.txt \
     --input data/TinyStoriesV2-GPT4-valid.txt \
@@ -452,7 +452,7 @@ np.save('data/val.npy', np.array(val_tokens, dtype=np.int32))
 
 ### 5. Train Transformer Model
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --train_data data/train.npy \
     --val_data data/val.npy \
     --d_model 768 \
@@ -469,7 +469,7 @@ uv run python train.py \
 ### 6. Generate Text
 ```bash
 # The decode script auto-detects tokenizer files
-uv run python decode.py \
+uv run python code/python/decode.py \
     --checkpoint checkpoints/final_checkpoint.pt \
     --prompt "Once upon a time, there was a little girl" \
     --max-tokens 100 \
@@ -485,21 +485,21 @@ uv run python decode.py \
 
 **Conservative (Safe) - ~6-7GB**
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --d_model 768 --num_heads 12 --d_ff 3072 --num_layers 12 \
     --batch_size 8 --dtype float16
 ```
 
 **Optimized (Balanced) - ~8-9GB**
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --d_model 1024 --num_heads 16 --d_ff 4096 --num_layers 20 \
     --batch_size 4 --dtype float16
 ```
 
 **Maximum (Aggressive) - ~10-10.5GB**
 ```bash
-uv run python train.py \
+uv run python code/python/train.py \
     --d_model 1280 --num_heads 20 --d_ff 5120 --num_layers 30 \
     --batch_size 2 --dtype float16
 ```
@@ -555,9 +555,9 @@ python -c "import torch; print(f'GPU memory: {torch.cuda.memory_allocated()/1024
 
 **Import and use functions directly:**
 ```python
-from decode import load_model_from_checkpoint, load_tokenizer_from_files, decode_with_tokenizer
-from train import create_model_and_optimizer
-from bpe_tokenizer import BPETokenizer, train_bpe
+from code.python.decode import load_model_from_checkpoint, load_tokenizer_from_files, decode_with_tokenizer
+from code.python.train import create_model_and_optimizer
+from code.python.bpe_tokenizer import BPETokenizer, train_bpe
 
 # Load components
 model = load_model_from_checkpoint("checkpoints/model.pt")
@@ -570,7 +570,7 @@ text = decode_with_tokenizer(model, tokenizer, "Hello world", max_tokens=50)
 ### Weights & Biases Integration
 ```bash
 # Enable logging during training
-uv run python train.py \
+uv run python code/python/train.py \
     --use_wandb \
     --wandb_project transformer-experiments \
     --wandb_run_name tinystories-768d-12l
@@ -586,10 +586,10 @@ uv run python train.py \
 echo "Hello world! This is a test. The quick brown fox jumps over the lazy dog." > test.txt
 
 # 2. Train small tokenizer
-uv run python train_bpe_tokenizer.py --input test.txt --output test_tokenizer --vocab-size 500
+uv run python code/python/train_bpe_tokenizer.py --input test.txt --output test_tokenizer --vocab-size 500
 
 # 3. Test tokenization
-uv run python bpe_tokenize.py --vocab test_tokenizer/vocab.json --merges test_tokenizer/merges.txt --text "Hello world!"
+uv run python code/python/bpe_tokenize.py --vocab test_tokenizer/vocab.json --merges test_tokenizer/merges.txt --text "Hello world!"
 
 # 4. Clean up
 rm test.txt && rm -rf test_tokenizer

@@ -129,7 +129,7 @@ uv run python code/decode.py --checkpoint checkpoints/final_checkpoint.pt --prom
 - **`transformers.py`**: Core transformer implementations and utilities.
 - **`bpe_tokenizer.py`**: BPE tokenizer implementation.
 
-## Rust BPE Tokenizer (`rust_bpe/`)
+## Rust BPE Tokenizer (`code/rust/`)
 
 A high-performance BPE tokenizer implementation in Rust with Python bindings. It features significant performance and memory optimizations.
 
@@ -143,7 +143,7 @@ A high-performance BPE tokenizer implementation in Rust with Python bindings. It
 ### Building
 
 ```bash
-cd rust_bpe
+cd code/rust
 cargo build --release
 ```
 

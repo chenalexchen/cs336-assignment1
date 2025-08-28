@@ -56,7 +56,7 @@ This codebase follows a test-driven development pattern where:
 - All implementations should support arbitrary batch dimensions using einops/einx
 
 #### Tokenization (`tests/test_tokenizer.py`, `tests/test_train_bpe.py`)
-- BPE (Byte Pair Encoding) tokenizer implementation in `code/bpe_tokenizer.py`
+- BPE (Byte Pair Encoding) tokenizer implementation in `code/python/bpe_tokenizer.py`
 - Pre-tokenization with regex patterns following GPT-2 style
 - Special token handling
 - Parallel processing for large datasets using multiprocessing

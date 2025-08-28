@@ -20,7 +20,7 @@ A **ultra-high-performance** Byte Pair Encoding (BPE) tokenizer implementation i
 This project uses Cargo for building Rust binaries. Build in release mode for optimal performance:
 
 ```bash
-cd rust_bpe
+cd code/rust
 cargo build --release
 ```
 
@@ -398,7 +398,7 @@ To help identify and resolve consistency issues, the implementations now support
 1. **Extract word frequencies separately**:
    ```bash
    # Python
-   uv run python train_bpe_tokenizer.py --mode extract-freqs --input data.txt --word-freqs-file py_freqs.json
+   uv run python code/python/train_bpe_tokenizer.py --mode extract-freqs --input data.txt --word-freqs-file py_freqs.json
    
    # Rust  
    ./target/release/train_bpe_tokenizer --mode extract-freqs --input data.txt --word-freqs-file rust_freqs.json
@@ -413,7 +413,7 @@ To help identify and resolve consistency issues, the implementations now support
 3. **Train from same frequencies**:
    ```bash
    # Use identical word frequencies for both implementations
-   uv run python train_bpe_tokenizer.py --mode train-from-freqs --word-freqs-file shared_freqs.json --output py_tokenizer --vocab-size 10000
+   uv run python code/python/train_bpe_tokenizer.py --mode train-from-freqs --word-freqs-file shared_freqs.json --output py_tokenizer --vocab-size 10000
    ./target/release/train_bpe_tokenizer --mode train-from-freqs --word-freqs-file shared_freqs.json --output rust_tokenizer --vocab-size 10000
    ```
 
@@ -538,7 +538,7 @@ Comprehensive documentation is available in the [`docs/`](docs/) directory:
 ## File Structure
 
 ```
-rust_bpe/
+code/rust/
 ├── Cargo.toml                      # Rust project configuration with multiple binaries
 ├── src/
 │   ├── lib.rs                      # Core BPE implementation (u16 optimized)
