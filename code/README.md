@@ -57,14 +57,47 @@ uv run python train_bpe_tokenizer.py \
     --verbose
 ```
 
+#### Training Modes
+
+**Full Training (default)**
+```bash
+# Complete training in one step
+uv run python train_bpe_tokenizer.py \
+    --input data/corpus.txt \
+    --output my_tokenizer \
+    --vocab-size 32000 \
+    --mode full
+```
+
+**Extract Word Frequencies Only**
+```bash
+# Extract and save word frequencies without training
+uv run python train_bpe_tokenizer.py \
+    --input data/corpus.txt \
+    --word-freqs-file word_freqs.json \
+    --mode extract-freqs
+```
+
+**Train from Pre-extracted Frequencies**
+```bash
+# Train BPE from previously extracted word frequencies
+uv run python train_bpe_tokenizer.py \
+    --word-freqs-file word_freqs.json \
+    --output my_tokenizer \
+    --vocab-size 32000 \
+    --mode train-from-freqs
+```
+
 #### Arguments
 
-**Required:**
-- `--input, -i`: Path to training text file
-- `--output, -o`: Output directory for tokenizer files  
-- `--vocab-size, -v`: Target vocabulary size
+**Required (mode-dependent):**
+- `--input, -i`: Path to training text file (required for `full` and `extract-freqs` modes)
+- `--output, -o`: Output directory for tokenizer files (required for `full` and `train-from-freqs` modes)
+- `--vocab-size, -v`: Target vocabulary size (required for `full` and `train-from-freqs` modes)
+- `--word-freqs-file`: Path to word frequencies JSON file (required for `extract-freqs` and `train-from-freqs` modes)
 
 **Optional:**
+- `--mode`: Training mode - `full`, `extract-freqs`, or `train-from-freqs` (default: `full`)
 - `--special-tokens, -s`: Special tokens (default: `["<|endoftext|>"]`)
 - `--test-text`: Sample text to test after training
 - `--verbose`: Enable verbose training output

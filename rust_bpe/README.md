@@ -129,12 +129,37 @@ Interactive mode supports these commands:
 
 Use the `train_bpe_tokenizer` binary for training with comprehensive argument parsing:
 
-```bash
-# Train with explicit arguments
-./target/release/train_bpe_tokenizer --input ../data/owt_train.txt --output ../tokenizer_output/owt_32k --vocab-size 32000
+##### Training Modes
 
-# Train with custom special tokens
-./target/release/train_bpe_tokenizer --input ../data/owt_train.txt --output ../tokenizer_output/owt_32k --vocab-size 32000 --special-tokens "<|endoftext|>" "<|pad|>" "<|unk|>"
+**Full Training (default)**
+```bash
+# Complete training in one step
+./target/release/train_bpe_tokenizer --input ../data/owt_train.txt --output ../tokenizer_output/owt_32k --vocab-size 32000 --mode full
+```
+
+**Extract Word Frequencies Only**
+```bash
+# Extract and save word frequencies without training
+./target/release/train_bpe_tokenizer --input ../data/owt_train.txt --word-freqs-file ../word_freqs/owt_freqs.json --mode extract-freqs
+```
+
+**Train from Pre-extracted Frequencies**
+```bash
+# Train BPE from previously extracted word frequencies
+./target/release/train_bpe_tokenizer --word-freqs-file ../word_freqs/owt_freqs.json --output ../tokenizer_output/owt_32k --vocab-size 32000 --mode train-from-freqs
+```
+
+##### Examples with Custom Special Tokens
+
+```bash
+# Full training with special tokens
+./target/release/train_bpe_tokenizer --input ../data/owt_train.txt --output ../tokenizer_output/owt_32k --vocab-size 32000 --special-tokens "<|endoftext|>" "<|pad|>" "<|unk|>" --mode full
+
+# Extract frequencies only
+./target/release/train_bpe_tokenizer --input ../data/corpus.txt --word-freqs-file word_freqs.json --mode extract-freqs --special-tokens "<|endoftext|>"
+
+# Train from frequencies with special tokens
+./target/release/train_bpe_tokenizer --word-freqs-file word_freqs.json --output tokenizer_output --vocab-size 32000 --mode train-from-freqs --special-tokens "<|endoftext|>" "<|pad|>"
 ```
 
 ## Performance Optimizations & Results
@@ -259,25 +284,148 @@ The tokenizer uses GPT-2 style pre-tokenization with regex patterns:
 3. **Merge Learning**: Iteratively find and apply the most frequent byte pair merges
 4. **Vocabulary Building**: Build final vocabulary with learned merges
 
-### Inter-operability with Python
+### Python-Rust Consistency Analysis
 
-The `bpe_tokenize` binary implements the full BPE algorithm with proper merge application, ensuring **perfect inter-operability** with Python implementations:
+⚠️ **Important**: There are known consistency issues between the Python and Rust BPE tokenizer implementations. While both implementations follow the BPE algorithm correctly, they can produce different results due to several fundamental differences in their preprocessing and text processing approaches.
 
-- ✅ **Identical Tokenization**: Rust and Python produce identical token sequences
-- ✅ **GPT-2 Compatible**: Uses regex patterns adapted for Rust regex engine
-- ✅ **Priority-based Merging**: Applies merges in correct priority order (earliest learned = highest priority)
-- ✅ **Cross-platform Testing**: Verified through comprehensive inter-op test suite
+#### Consistency Status (as of latest testing)
 
-**Example Inter-operability:**
-```bash
-# Python tokenization
-./code/bpe_tokenize.py --text "Hello world!" 
-# Output: [372, 32, 290, 33]
+**Word Frequency Extraction**: ✅ **99.95% consistent**
+- Python: 13,111 unique word types
+- Rust: 13,105 unique word types (only 6 word difference)
+- Top frequency words match exactly between implementations
 
-# Rust tokenization (identical result)
-./target/release/bpe_tokenize --text "Hello world!" 
-# Output: [372, 32, 290, 33]
+**Tokenization Output**: ⚠️ **Inconsistent** (under investigation)
+- Same input text produces different token sequences
+- Differences stem from preprocessing and chunking strategies
+
+#### Major Differences & Root Causes
+
+##### 1. **Regex Engine Limitations**
+**Issue**: Python's `regex` module supports advanced features that Rust's `regex` crate doesn't support.
+
+**Specific Example - Negative Lookahead**:
+```python
+# Python regex (supported)
+r"(?!\S)"  # Negative lookahead - matches positions not followed by non-whitespace
+
+# Rust regex (NOT supported)
+# Error: "look-around, including look-ahead and look-behind, is not supported"
 ```
+
+**Impact**: 
+- Different whitespace handling patterns between implementations
+- Python can use more sophisticated boundary detection
+- Rust requires alternative approaches using post-processing
+
+**Workaround**: Implemented custom post-processing logic in Rust to achieve similar behavior.
+
+##### 2. **Text Chunking Strategies**
+**Issue**: Python and Rust use different approaches for processing large text files.
+
+**Python Approach**:
+- Processes text in chunks with special token boundary detection
+- Uses byte-based chunking with `find_chunk_boundaries()` function
+- Maintains context across chunk boundaries
+
+**Rust Approach (Original)**:
+- Line-by-line processing for memory efficiency
+- No cross-line context preservation
+- Different newline handling patterns
+
+**Fix Applied**: Implemented Python-compatible chunking strategy in Rust with `extract_word_frequencies_python_compatible()` function.
+
+##### 3. **Special Token Handling**
+**Issue**: Inconsistent treatment of special tokens during word frequency extraction.
+
+**Problem Found**:
+- Rust was including special token 256 with frequency 27,630
+- Python excluded special tokens from frequency counting
+- Led to different base vocabularies
+
+**Fix Applied**: Modified Rust `tokens_to_bytes()` function to filter out special tokens using `filter_map()`.
+
+##### 4. **Whitespace Processing Differences**
+**Issue**: Different handling of consecutive whitespace characters.
+
+**Python Behavior**:
+- Splits consecutive whitespace into individual characters
+- Each space, tab, newline treated separately
+
+**Rust Behavior (Original)**:
+- Grouped consecutive whitespace differently
+- Led to different word boundary detection
+
+**Fix Applied**: Implemented whitespace character splitting to match Python's regex behavior.
+
+##### 5. **Unicode and Byte-level Processing**
+**Issue**: Subtle differences in how Unicode characters are converted to bytes and processed.
+
+**Areas of Difference**:
+- UTF-8 encoding edge cases
+- Byte-level tokenization boundary handling
+- Character normalization approaches
+
+#### Current Consistency Achievements
+
+After implementing fixes for major issues:
+
+**✅ Word Frequency Extraction**: Near-perfect consistency (99.95%)
+- Simple test case: Perfect match (10 vs 10 word types)
+- TinyStories dataset: Excellent match (13,111 vs 13,105 word types)
+- Only 6 words differ out of 13,111+ total words
+
+**✅ Core Algorithm**: Both implementations correctly follow BPE merge logic
+**✅ Special Tokens**: Consistent handling after fixes
+**✅ Text Chunking**: Python-compatible strategy implemented in Rust
+
+#### Remaining Investigation Areas
+
+**🔍 Tokenization Output Consistency**: 
+- Word frequencies are now aligned, but final tokenization may still differ
+- Need to test BPE training with aligned word frequencies
+- Investigate merge priority and tie-breaking logic
+
+**🔍 Edge Cases**:
+- Unicode normalization differences
+- Rare character sequences
+- File encoding handling
+
+#### Development Workflow for Consistency
+
+To help identify and resolve consistency issues, the implementations now support separated workflow:
+
+1. **Extract word frequencies separately**:
+   ```bash
+   # Python
+   uv run python train_bpe_tokenizer.py --mode extract-freqs --input data.txt --word-freqs-file py_freqs.json
+   
+   # Rust  
+   ./target/release/train_bpe_tokenizer --mode extract-freqs --input data.txt --word-freqs-file rust_freqs.json
+   ```
+
+2. **Compare word frequencies**:
+   ```bash
+   # Check consistency at the word frequency level
+   diff py_freqs.json rust_freqs.json
+   ```
+
+3. **Train from same frequencies**:
+   ```bash
+   # Use identical word frequencies for both implementations
+   uv run python train_bpe_tokenizer.py --mode train-from-freqs --word-freqs-file shared_freqs.json --output py_tokenizer --vocab-size 10000
+   ./target/release/train_bpe_tokenizer --mode train-from-freqs --word-freqs-file shared_freqs.json --output rust_tokenizer --vocab-size 10000
+   ```
+
+This workflow isolates whether differences come from word frequency extraction versus the BPE merge algorithm itself.
+
+#### Performance vs Consistency Trade-offs
+
+**Rust Optimizations**: The Rust implementation prioritizes performance with advanced optimizations (50% faster, 50% memory reduction), which may introduce subtle behavioral differences.
+
+**Python Compatibility**: Some Rust optimizations had to be modified to maintain Python compatibility, slightly reducing performance but improving consistency.
+
+**Recommendation**: For production use requiring perfect consistency, use the same implementation (Python or Rust) throughout your pipeline. For maximum performance where small differences are acceptable, use the optimized Rust implementation.
 
 ### Special Token Handling
 
