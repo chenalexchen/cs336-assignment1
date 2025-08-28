@@ -1,0 +1,6 @@
+Vocabulary size: 10000
+Number of merges: 9743
+Special tokens: ['<|endoftext|>']
+Base tokens (0-255): 256
+Special tokens: 1
+Learned merges: 9743
