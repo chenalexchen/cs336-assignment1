@@ -1,4 +1,6 @@
 import os
+import json
+from pathlib import Path
 from collections import defaultdict
 import regex as re
 from multiprocessing import Pool, cpu_count
@@ -126,49 +128,30 @@ def extract_word_freqs(input_path: str | os.PathLike, special_tokens: list[str])
     for chunk_result in chunk_results:
         for word_bytes, freq in chunk_result.items():
             word_freqs[word_bytes] = word_freqs.get(word_bytes, 0) + freq
-    
+
     import json
-    with open('output/tokenizer_inter_op/python/word_freqs.json', 'w') as f:
+
+    with open("output/tokenizer_inter_op/python/word_freqs.json", "w") as f:
         string_keyed_word_freqs = {",".join(map(str, k)): v for k, v in word_freqs.items()}
         json.dump(string_keyed_word_freqs, f)
 
     return word_freqs
 
-def train_bpe(
-    input_path: str | os.PathLike, vocab_size: int, special_tokens: list[str]
-) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+
+def train_bpe_merges(word_freqs: dict, vocab: dict, target_merges: int) -> list[tuple[bytes, bytes]]:
     """
-    Trains a (byte-level) BPE tokenizer with proper pre-tokenization.
+    Shared merge logic for BPE training.
 
     Args:
-        input_path: Path to a text file with BPE tokenizer training data.
-        vocab_size: A positive integer that defines the maximum final vocabulary size (including the
-                    initial byte vocabulary, vocabulary items produced from merging, and any special tokens).
-        special_tokens: A list of strings to add to the vocabulary. These special tokens do not
-                        otherwise affect BPE training.
+        word_freqs: Dictionary mapping word tuples to frequencies
+        vocab: Current vocabulary mapping token IDs to bytes
+        target_merges: Number of merges to perform
+
     Returns:
-        vocab: The tokenizer vocabulary, a mapping from int (token ID in the vocabulary) to bytes (token bytes).
-        merges: A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>),
-                representing that <token1> was merged with <token2>. The merges should be ordered by order of creation.
+        List of merge rules as (token1_bytes, token2_bytes) tuples
     """
-    # Initialize vocabulary with base bytes (0-255)
-    vocab = {i: bytes([i]) for i in range(256)}
-    next_token_id = 256
-
-    # Add special tokens to vocab
-    for special_token in special_tokens:
-        vocab[next_token_id] = special_token.encode("utf-8")
-        next_token_id += 1
-
-    word_freqs = extract_word_freqs(input_path, special_tokens)
-
-    if not word_freqs:
-        return vocab, []
-
-    
-
     merges = []
-    target_merges = vocab_size - len(vocab)
+    next_token_id = max(vocab.keys()) + 1
 
     # Initialize pair counts once
     pair_counts = defaultdict(int)
@@ -266,6 +249,142 @@ def train_bpe(
                 new_word_freqs[word_bytes] += freq
 
         word_freqs = dict(new_word_freqs)
+
+    return merges
+
+
+def train_bpe_from_freqs(
+    word_freqs: dict, vocab_size: int, special_tokens: list[str]
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """
+    Train BPE from pre-computed word frequencies.
+
+    Args:
+        word_freqs: Dictionary mapping word tuples to frequencies
+        vocab_size: Target vocabulary size
+        special_tokens: List of special tokens
+
+    Returns:
+        vocab: Vocabulary mapping token IDs to bytes
+        merges: List of merge rules
+    """
+    # Initialize vocabulary with base bytes (0-255)
+    vocab = {i: bytes([i]) for i in range(256)}
+    next_token_id = 256
+
+    # Add special tokens to vocab
+    for special_token in special_tokens:
+        vocab[next_token_id] = special_token.encode("utf-8")
+        next_token_id += 1
+
+    if not word_freqs:
+        return vocab, []
+
+    # Calculate target number of merges
+    target_merges = vocab_size - len(vocab)
+    if target_merges <= 0:
+        return vocab, []
+
+    # Use shared merge logic
+    merges = train_bpe_merges(word_freqs, vocab, target_merges)
+
+    return vocab, merges
+
+
+def save_word_freqs(word_freqs: dict, output_file: str):
+    """
+    Save word frequencies to a JSON file, ordered by frequency (descending).
+
+    Args:
+        word_freqs: Dictionary mapping word tuples to frequencies
+        output_file: Path to output JSON file
+    """
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Convert to list and sort by frequency (descending), then by word for determinism
+    sorted_freqs = sorted(word_freqs.items(), key=lambda x: (-x[1], x[0]))
+
+    # Convert to JSON-serializable format
+    json_data = []
+    for word_tuple, freq in sorted_freqs:
+        # Convert tuple of bytes to string representation for JSON
+        word_str = "".join(chr(b) if b < 128 else f"\\x{b:02x}" for b in word_tuple)
+        json_data.append(
+            {
+                "word": list(word_tuple),  # Store as list of integers
+                "word_display": word_str,  # Human-readable representation
+                "frequency": freq,
+            }
+        )
+
+    with open(output_file, "w") as f:
+        json.dump(json_data, f, indent=2)
+
+    print(f"✓ Saved {len(word_freqs)} word frequencies to {output_file}")
+
+
+def load_word_freqs(input_file: str) -> dict:
+    """
+    Load word frequencies from a JSON file.
+
+    Args:
+        input_file: Path to JSON file containing word frequencies
+
+    Returns:
+        Dictionary mapping word tuples to frequencies
+    """
+    with open(input_file, "r") as f:
+        json_data = json.load(f)
+
+    word_freqs = {}
+    for item in json_data:
+        word_tuple = tuple(item["word"])
+        frequency = item["frequency"]
+        word_freqs[word_tuple] = frequency
+
+    print(f"✅ Loaded {len(word_freqs)} word frequencies from {input_file}")
+    return word_freqs
+
+
+def train_bpe(
+    input_path: str | os.PathLike, vocab_size: int, special_tokens: list[str]
+) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    """
+    Trains a (byte-level) BPE tokenizer with proper pre-tokenization.
+
+    Args:
+        input_path: Path to a text file with BPE tokenizer training data.
+        vocab_size: A positive integer that defines the maximum final vocabulary size (including the
+                    initial byte vocabulary, vocabulary items produced from merging, and any special tokens).
+        special_tokens: A list of strings to add to the vocabulary. These special tokens do not
+                        otherwise affect BPE training.
+    Returns:
+        vocab: The tokenizer vocabulary, a mapping from int (token ID in the vocabulary) to bytes (token bytes).
+        merges: A list of BPE merges produced from training. Each list item is a tuple of bytes (<token1>, <token2>),
+                representing that <token1> was merged with <token2>. The merges should be ordered by order of creation.
+    """
+    # Initialize vocabulary with base bytes (0-255)
+    vocab = {i: bytes([i]) for i in range(256)}
+    next_token_id = 256
+
+    # Add special tokens to vocab
+    for special_token in special_tokens:
+        vocab[next_token_id] = special_token.encode("utf-8")
+        next_token_id += 1
+
+    word_freqs = extract_word_freqs(input_path, special_tokens)
+
+    if not word_freqs:
+        return vocab, []
+
+    # Calculate target number of merges
+    target_merges = vocab_size - len(vocab)
+    if target_merges <= 0:
+        return vocab, []
+
+    # Use shared merge logic
+    merges = train_bpe_merges(word_freqs, vocab, target_merges)
 
     return vocab, merges
 

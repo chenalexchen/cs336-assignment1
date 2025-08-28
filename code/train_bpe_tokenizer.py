@@ -15,10 +15,80 @@ from typing import List
 
 try:
     # Try relative import for module usage
-    from .bpe_tokenizer import train_bpe, BPETokenizer
+    from .bpe_tokenizer import (
+        train_bpe,
+        BPETokenizer,
+        extract_word_freqs,
+        train_bpe_from_freqs,
+        save_word_freqs,
+        load_word_freqs,
+    )
 except ImportError:
     # Fallback for standalone script usage
-    from bpe_tokenizer import train_bpe, BPETokenizer
+    from bpe_tokenizer import (
+        train_bpe,
+        BPETokenizer,
+        extract_word_freqs,
+        train_bpe_from_freqs,
+        save_word_freqs,
+        load_word_freqs,
+    )
+
+
+def save_word_freqs(word_freqs: dict, output_file: str):
+    """
+    Save word frequencies to a JSON file, ordered by frequency (descending).
+
+    Args:
+        word_freqs: Dictionary mapping word tuples to frequencies
+        output_file: Path to output JSON file
+    """
+    output_path = Path(output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Convert to list and sort by frequency (descending), then by word for determinism
+    sorted_freqs = sorted(word_freqs.items(), key=lambda x: (-x[1], x[0]))
+
+    # Convert to JSON-serializable format
+    json_data = []
+    for word_tuple, freq in sorted_freqs:
+        # Convert tuple of bytes to string representation for JSON
+        word_str = "".join(chr(b) if b < 128 else f"\\x{b:02x}" for b in word_tuple)
+        json_data.append(
+            {
+                "word": list(word_tuple),  # Store as list of integers
+                "word_display": word_str,  # Human-readable representation
+                "frequency": freq,
+            }
+        )
+
+    with open(output_file, "w") as f:
+        json.dump(json_data, f, indent=2)
+
+    print(f"✓ Saved {len(word_freqs)} word frequencies to {output_file}")
+
+
+def load_word_freqs(input_file: str) -> dict:
+    """
+    Load word frequencies from a JSON file.
+
+    Args:
+        input_file: Path to JSON file containing word frequencies
+
+    Returns:
+        Dictionary mapping word tuples to frequencies
+    """
+    with open(input_file, "r") as f:
+        json_data = json.load(f)
+
+    word_freqs = {}
+    for item in json_data:
+        word_tuple = tuple(item["word"])
+        frequency = item["frequency"]
+        word_freqs[word_tuple] = frequency
+
+    print(f"✅ Loaded {len(word_freqs)} word frequencies from {input_file}")
+    return word_freqs
 
 
 def save_tokenizer_files(vocab: dict, merges: list, output_dir: str, special_tokens: List[str]):
@@ -120,8 +190,7 @@ Examples:
         "--vocab-size",
         "-v",
         type=int,
-        required=True,
-        help="Target vocabulary size (includes base bytes and special tokens)",
+        help="Target vocabulary size (includes base bytes and special tokens, required for full and train-from-freqs modes)",
     )
 
     # Optional arguments
@@ -132,6 +201,17 @@ Examples:
         nargs="*",
         default=["<|endoftext|>"],
         help="Special tokens to add to vocabulary (default: ['<|endoftext|>'])",
+    )
+
+    # Mode options
+    parser.add_argument(
+        "--mode",
+        choices=["full", "extract-freqs", "train-from-freqs"],
+        default="full",
+        help="Training mode: 'full' (extract freqs + train), 'extract-freqs' (only extract word frequencies), 'train-from-freqs' (load freqs + train)",
+    )
+    parser.add_argument(
+        "--word-freqs-file", type=str, help="Path to word frequencies JSON file (required for 'train-from-freqs' mode)"
     )
 
     # Output options
@@ -184,34 +264,77 @@ def main():
     print("🚀 Starting BPE tokenizer training")
     print("=" * 50)
 
-    # Validate arguments
-    if args.vocab_size <= 256:
-        print(f"❌ Error: vocab_size ({args.vocab_size}) must be > 256 (base byte vocabulary)")
-        return 1
+    # Validate arguments based on mode
+    if args.mode == "train-from-freqs":
+        if not args.word_freqs_file:
+            print("❌ Error: --word-freqs-file is required for 'train-from-freqs' mode")
+            return 1
+        if not os.path.exists(args.word_freqs_file):
+            print(f"❌ Error: Word frequencies file '{args.word_freqs_file}' not found")
+            return 1
+    else:
+        if not os.path.exists(args.input):
+            print(f"❌ Error: Input file '{args.input}' not found")
+            return 1
 
-    if not os.path.exists(args.input):
-        print(f"❌ Error: Input file '{args.input}' not found")
-        return 1
+    # Validate vocab_size for modes that need it
+    if args.mode != "extract-freqs":
+        if not args.vocab_size:
+            print(f"❌ Error: --vocab-size is required for '{args.mode}' mode")
+            return 1
+        if args.vocab_size <= 256:
+            print(f"❌ Error: vocab_size ({args.vocab_size}) must be > 256 (base byte vocabulary)")
+            return 1
 
     # Show configuration
-    print(f"📁 Input file: {args.input}")
-    print(f"📁 Output directory: {args.output}")
-    print(f"📊 Target vocabulary size: {args.vocab_size:,}")
+    print(f"🔧 Mode: {args.mode}")
+    if args.mode != "train-from-freqs":
+        print(f"📁 Input file: {args.input}")
+        file_size = os.path.getsize(args.input)
+        print(f"📏 Input file size: {file_size:,} bytes ({file_size / 1024 / 1024:.1f} MB)")
+    if args.mode != "extract-freqs":
+        print(f"📁 Output directory: {args.output}")
+        print(f"📊 Target vocabulary size: {args.vocab_size:,}")
+    if args.word_freqs_file:
+        print(f"📋 Word frequencies file: {args.word_freqs_file}")
     print(f"🏷️  Special tokens: {args.special_tokens}")
 
-    # Check input file size
-    file_size = os.path.getsize(args.input)
-    print(f"📏 Input file size: {file_size:,} bytes ({file_size / 1024 / 1024:.1f} MB)")
-
     try:
-        # Start training
-        print(f"\n⏳ Training BPE tokenizer...")
         start_time = time.time()
 
-        if args.verbose:
-            print("Training in verbose mode...")
+        if args.mode == "extract-freqs":
+            # Only extract word frequencies
+            print(f"\n📊 Extracting word frequencies...")
+            word_freqs = extract_word_freqs(args.input, args.special_tokens)
 
-        vocab, merges = train_bpe(input_path=args.input, vocab_size=args.vocab_size, special_tokens=args.special_tokens)
+            # Save word frequencies
+            freqs_output = f"{args.output}/word_freqs.json"
+            save_word_freqs(word_freqs, freqs_output)
+
+            end_time = time.time()
+            print(f"✅ Word frequency extraction completed in {end_time - start_time:.1f}s")
+            print(f"📊 Extracted {len(word_freqs)} unique word types")
+            print(f"📁 Word frequencies saved to: {freqs_output}")
+            return 0
+
+        elif args.mode == "train-from-freqs":
+            # Load word frequencies and train
+            print(f"\n📋 Loading word frequencies from {args.word_freqs_file}...")
+            word_freqs = load_word_freqs(args.word_freqs_file)
+
+            print(f"\n⏳ Training BPE from loaded frequencies...")
+            vocab, merges = train_bpe_from_freqs(word_freqs, args.vocab_size, args.special_tokens)
+
+        else:  # full mode
+            # Full training pipeline
+            print(f"\n⏳ Training BPE tokenizer...")
+
+            if args.verbose:
+                print("Training in verbose mode...")
+
+            vocab, merges = train_bpe(
+                input_path=args.input, vocab_size=args.vocab_size, special_tokens=args.special_tokens
+            )
 
         end_time = time.time()
         training_time = end_time - start_time
