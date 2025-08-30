@@ -94,37 +94,63 @@ def tokenize_file(
     """
     print(f"🔤 Tokenizing file: {input_path}")
 
-    # Read input file
-    with open(input_path, "r", encoding="utf-8") as f:
-        text = f.read()
-
+    # Use memory-efficient streaming tokenization
     start_time = time.time()
-
-    # Tokenize
-    token_ids = tokenizer.encode(text)
+    
+    print("   Using streaming tokenization to avoid memory issues...")
+    
+    token_count = 0
+    token_ids = []  # Only collect if no output file or format requires it
+    
+    # Stream tokens directly to file for "ids" format to save memory
+    if output_path and output_format == "ids":
+        output_path = Path(output_path)
+        with open(input_path, "r", encoding="utf-8") as input_f, \
+             open(output_path, "w") as output_f:
+            
+            first_token = True
+            for token_id in tokenizer.encode_iterable(input_f):
+                if not first_token:
+                    output_f.write(" ")
+                output_f.write(str(token_id))
+                first_token = False
+                token_count += 1
+                
+                # Progress indicator for large files
+                if token_count % 100000 == 0:
+                    print(f"   • Processed {token_count:,} tokens...")
+        
+        print(f"💾 Saved token IDs to {output_path}")
+        token_ids = []  # Don't keep in memory
+    else:
+        # For other formats or no output file, collect tokens
+        with open(input_path, "r", encoding="utf-8") as f:
+            token_ids = list(tokenizer.encode_iterable(f))
+        token_count = len(token_ids)
+    
+    # Calculate text length for stats (if needed)
+    if show_stats:
+        with open(input_path, "r", encoding="utf-8") as f:
+            text_len = sum(len(line) for line in f)
+    else:
+        text_len = 0
 
     end_time = time.time()
     tokenization_time = end_time - start_time
 
     if show_stats:
         print(f"📊 Tokenization stats:")
-        print(f"   • Input characters: {len(text):,}")
-        print(f"   • Output tokens: {len(token_ids):,}")
-        print(f"   • Compression ratio: {len(text) / len(token_ids):.2f}x")
+        print(f"   • Input characters: {text_len:,}")
+        print(f"   • Output tokens: {token_count:,}")
+        print(f"   • Compression ratio: {text_len / token_count:.2f}x")
         print(f"   • Time: {tokenization_time:.3f}s")
-        print(f"   • Speed: {len(text) / tokenization_time / 1000:.1f}K chars/sec")
+        print(f"   • Speed: {text_len / tokenization_time / 1000:.1f}K chars/sec")
 
-    # Save output if path provided
-    if output_path:
+    # Save output if path provided (only for non-ids formats, since ids was already streamed)
+    if output_path and output_format != "ids":
         output_path = Path(output_path)
 
-        if output_format == "ids":
-            # Save as space-separated token IDs
-            with open(output_path, "w") as f:
-                f.write(" ".join(map(str, token_ids)))
-            print(f"💾 Saved token IDs to {output_path}")
-
-        elif output_format == "json":
+        if output_format == "json":
             # Save as JSON array
             with open(output_path, "w") as f:
                 json.dump(token_ids, f)

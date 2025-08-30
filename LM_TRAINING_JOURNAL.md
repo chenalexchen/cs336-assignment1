@@ -108,7 +108,7 @@ mkdir -p checkpoints/my_first_model
 **Rationale:** Conservative settings for 8GB GPU memory, designed for first-time training
 
 ```bash
-# Training command (ready to execute)
+# Training command with W&B monitoring (ready to execute)
 uv run python code/python/train.py \
   --d_model 256 \           # Small model dimension for memory efficiency
   --num_heads 8 \           # 8 attention heads
@@ -124,16 +124,46 @@ uv run python code/python/train.py \
   --train_data training_data/tiny_stories_10000/train/tokens.npy \
   --val_data training_data/tiny_stories_10000/validation/tokens.npy \
   --checkpoint_dir checkpoints/my_first_model \
-  --log_interval 50 \       # Log every 50 steps
+  --log_interval 25 \       # Log every 25 steps (more frequent)
   --eval_interval 500 \     # Evaluate every 500 steps
   --dtype float16 \         # Half precision for memory savings
-  --device cuda
+  --device cuda \
+  --use_wandb \             # Enable Weights & Biases monitoring
+  --wandb_project "my-first-transformer" \
+  --wandb_run_name "tinystories-256d-6layers"
 ```
 
 **Expected Model Stats:**
 - Parameters: ~25M parameters
 - Memory usage: ~4-5GB with float16
 - Training time: ~2-3 hours for 10k steps
+
+### Step 5: Setup Training Monitoring
+**Date:** 2025-08-28
+
+```bash
+# Install Weights & Biases
+uv add wandb
+
+# Set W&B API key (already configured)
+export WANDB_API_KEY=25e640884019400669b8f42aa779539240063493
+echo "export WANDB_API_KEY=25e640884019400669b8f42aa779539240063493" >> ~/.bashrc
+```
+
+**Monitoring Features Enabled:**
+- ✅ **Real-time dashboards** at https://wandb.ai/
+- ✅ **Loss curves** (training & validation)
+- ✅ **GPU monitoring** (utilization, memory, temperature)
+- ✅ **Learning rate schedule** visualization
+- ✅ **System metrics** (CPU, RAM usage)
+- ✅ **Hyperparameter tracking** (automatic logging)
+- ✅ **Training speed** metrics (tokens/sec, steps/sec)
+
+**Project Details:**
+- Project: `my-first-transformer`
+- Run Name: `tinystories-256d-6layers`
+- Logging Frequency: Every 25 steps
+- Evaluation Frequency: Every 500 steps
 
 ---
 
