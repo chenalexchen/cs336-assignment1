@@ -79,6 +79,10 @@ def parse_args():
     parser.add_argument("--vocab_size", type=int, default=32000, help="Vocabulary size")
     parser.add_argument("--context_length", type=int, default=1024, help="Maximum sequence length")
     parser.add_argument("--rope_theta", type=float, default=10000.0, help="RoPE theta parameter")
+    parser.add_argument("--disable_norm", action="store_true", help="Disable RMSNorm layers (ablation study)")
+    parser.add_argument("--disable_rope", action="store_true", help="Disable RoPE position encoding (ablation study)")
+    parser.add_argument("--post_norm", action="store_true", help="Use post-norm instead of pre-norm (ablation study)")
+    parser.add_argument("--use_silu", action="store_true", help="Use standard SiLU feed-forward instead of SwiGLU (ablation study)")
 
     # Training hyperparameters
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size")
@@ -135,7 +139,14 @@ def create_model_and_optimizer(args) -> tuple[TransformerLM, AdamWOptimizer]:
     # Determine dtype
     dtype = torch.float16 if args.dtype == "float16" else torch.float32
 
-    print(f"Creating model with {args.num_layers} layers, {args.d_model} dim, {args.num_heads} heads...")
+    normalization_status = "disabled" if args.disable_norm else "enabled"
+    rope_status = "disabled" if args.disable_rope else "enabled"
+    norm_type = "post-norm" if args.post_norm else "pre-norm"
+    activation_type = "SiLU" if args.use_silu else "SwiGLU"
+    
+    # Only show norm type if normalization is enabled
+    norm_info = f"RMSNorm {normalization_status}" + (f" ({norm_type})" if not args.disable_norm else "")
+    print(f"Creating model with {args.num_layers} layers, {args.d_model} dim, {args.num_heads} heads ({norm_info}, RoPE {rope_status}, {activation_type} activation)...")
 
     model = TransformerLM(
         d_model=args.d_model,
@@ -145,6 +156,10 @@ def create_model_and_optimizer(args) -> tuple[TransformerLM, AdamWOptimizer]:
         vocab_size=args.vocab_size,
         context_length=args.context_length,
         num_layers=args.num_layers,
+        use_norm=not args.disable_norm,
+        use_rope=not args.disable_rope,
+        pre_norm=not args.post_norm,
+        use_swiglu=not args.use_silu,
     ).to(device=args.device, dtype=dtype)
 
     # Count parameters

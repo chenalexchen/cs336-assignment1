@@ -95,6 +95,23 @@ class SwiGLUFeedForward(nn.Module):
         return einsum(self.w2, silu_ff_w3_x, "d_model d_ff, ... d_ff -> ... d_model")
 
 
+class SiLUFeedForward(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, device: torch.device = None, dtype: torch.dtype = None):
+        super().__init__()
+        stddev = math.sqrt(2 / (d_ff + d_model))
+        self.w1 = nn.Parameter(torch.empty(d_ff, d_model, device=device, dtype=dtype))
+        nn.init.trunc_normal_(self.w1, mean=0.0, std=stddev, a=-3.0 * stddev, b=3.0 * stddev)
+
+        self.w2 = nn.Parameter(torch.empty(d_model, d_ff, device=device, dtype=dtype))
+        nn.init.trunc_normal_(self.w2, mean=0.0, std=stddev, a=-3.0 * stddev, b=3.0 * stddev)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Standard feed-forward: Linear -> SiLU -> Linear
+        hidden = einsum(self.w1, x, "d_ff d_model, ... d_model -> ... d_ff")
+        activated = silu(hidden)
+        return einsum(self.w2, activated, "d_model d_ff, ... d_ff -> ... d_model")
+
+
 class RoPE(nn.Module):
     def __init__(self, d_model: int, max_seq_len: int = 2048, theta_base: float = 10000.0, device: torch.device = None):
         super().__init__()
@@ -314,16 +331,36 @@ class MultiHeadSelfAttention(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float, use_norm: bool = True, use_rope: bool = True, pre_norm: bool = True, use_swiglu: bool = True):
         super().__init__()
-        self.attention = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, use_rope=True, theta_base=theta)
-        self.rms_attn = RMSNorm(d_model)
-        self.ffn = SwiGLUFeedForward(d_model, d_ff)
-        self.rms_ffn = RMSNorm(d_model)
+        self.attention = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, use_rope=use_rope, theta_base=theta)
+        
+        # Conditionally create SwiGLU or standard SiLU feed-forward network
+        if use_swiglu:
+            self.ffn = SwiGLUFeedForward(d_model, d_ff)
+        else:
+            self.ffn = SiLUFeedForward(d_model, d_ff)
+            
+        self.use_norm = use_norm
+        self.pre_norm = pre_norm
+        
+        # Conditionally create RMSNorm layers
+        if use_norm:
+            self.rms_attn = RMSNorm(d_model)
+            self.rms_ffn = RMSNorm(d_model)
+        else:
+            self.rms_attn = nn.Identity()
+            self.rms_ffn = nn.Identity()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        attn = self.attention(self.rms_attn(x)) + x
-        ffn = self.ffn(self.rms_ffn(attn)) + attn
+        if self.pre_norm:
+            # Pre-norm: LayerNorm -> Sublayer -> Residual
+            attn = self.attention(self.rms_attn(x)) + x
+            ffn = self.ffn(self.rms_ffn(attn)) + attn
+        else:
+            # Post-norm: Sublayer -> Residual -> LayerNorm
+            attn = self.rms_attn(self.attention(x) + x)
+            ffn = self.rms_ffn(self.ffn(attn) + attn)
         return ffn
 
 
@@ -337,13 +374,24 @@ class TransformerLM(nn.Module):
         vocab_size: int,
         context_length: int,
         num_layers: int,
+        use_norm: bool = True,
+        use_rope: bool = True,
+        pre_norm: bool = True,
+        use_swiglu: bool = True,
     ):
         super().__init__()
         self.transformers = nn.ModuleList(
-            [Transformer(d_model, num_heads, d_ff, max_seq_len=context_length, theta=theta) for i in range(num_layers)]
+            [Transformer(d_model, num_heads, d_ff, max_seq_len=context_length, theta=theta, use_norm=use_norm, use_rope=use_rope, pre_norm=pre_norm, use_swiglu=use_swiglu) for i in range(num_layers)]
         )
         self.token_emb = Embedding(vocab_size, d_model)
-        self.ln_final = RMSNorm(d_model)
+        self.use_norm = use_norm
+        
+        # Conditionally create final RMSNorm layer
+        if use_norm:
+            self.ln_final = RMSNorm(d_model)
+        else:
+            self.ln_final = nn.Identity()
+            
         self.lm_head = Linear(d_model, vocab_size)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
