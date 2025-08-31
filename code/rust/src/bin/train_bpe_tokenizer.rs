@@ -1,4 +1,5 @@
 use clap::{Parser, ValueEnum};
+use rayon;
 use rustc_hash::FxHashMap;
 use serde_json;
 use std::collections::HashMap;
@@ -54,6 +55,10 @@ struct Args {
     /// Enable verbose output during training
     #[arg(long = "verbose")]
     verbose: bool,
+
+    /// Number of threads to use for parallel processing (defaults to available CPU cores)
+    #[arg(short = 't', long = "num-threads")]
+    num_threads: Option<usize>,
 }
 
 /// Save tokenizer vocabulary and merges to files
@@ -244,6 +249,17 @@ fn test_tokenizer(
 
 fn main() {
     let args = Args::parse();
+
+    // Configure thread pool if num_threads is specified
+    if let Some(num_threads) = args.num_threads {
+        rayon::ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build_global()
+            .expect("Failed to initialize thread pool");
+        println!("🧵 Configured to use {} threads", num_threads);
+    } else {
+        println!("🧵 Using default thread count (available CPU cores)");
+    }
 
     println!("🚀 Starting BPE tokenizer training");
     println!("==================================================");
