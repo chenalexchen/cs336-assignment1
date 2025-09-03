@@ -2,7 +2,7 @@ use clap::Parser;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, Write};
 use std::path::Path;
 use std::time::Instant;
 
@@ -65,6 +65,57 @@ struct BPETokenizer {
     merge_priorities: HashMap<(Vec<u8>, Vec<u8>), usize>, // merge -> priority index
     special_tokens: Vec<String>,
     pat: Regex,                           // pre-tokenization pattern
+}
+
+/// Iterator for streaming BPE encoding
+struct BPEIterator<R: BufRead> {
+    tokenizer: *const BPETokenizer,
+    reader: R,
+    current_tokens: std::vec::IntoIter<u16>,
+    buffer: String,
+}
+
+impl<R: BufRead> BPEIterator<R> {
+    fn new(tokenizer: &BPETokenizer, reader: R) -> Self {
+        Self {
+            tokenizer: tokenizer as *const BPETokenizer,
+            reader,
+            current_tokens: Vec::new().into_iter(),
+            buffer: String::new(),
+        }
+    }
+}
+
+impl<R: BufRead> Iterator for BPEIterator<R> {
+    type Item = u16;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // First, try to get a token from our current batch
+        if let Some(token) = self.current_tokens.next() {
+            return Some(token);
+        }
+
+        // Read next line and tokenize it
+        loop {
+            self.buffer.clear();
+            match self.reader.read_line(&mut self.buffer) {
+                Ok(0) => return None, // EOF
+                Ok(_) => {
+                    // Safely dereference the tokenizer pointer
+                    let tokenizer = unsafe { &*self.tokenizer };
+                    let token_ids = tokenizer.encode(&self.buffer);
+                    self.current_tokens = token_ids.into_iter();
+                    
+                    // Try to get the first token from this line
+                    if let Some(token) = self.current_tokens.next() {
+                        return Some(token);
+                    }
+                    // If no tokens, continue to next line
+                }
+                Err(_) => return None,
+            }
+        }
+    }
 }
 
 impl BPETokenizer {
@@ -186,6 +237,57 @@ impl BPETokenizer {
         }
         String::from_utf8_lossy(&bytes).to_string()
     }
+
+    /// Memory-efficient encoding of text from a buffered reader
+    /// 
+    /// This method processes text line by line to avoid loading the entire file into memory.
+    /// It yields token IDs as they are produced, similar to the Python encode_iterable method.
+    fn encode_iterable<R: BufRead>(&self, reader: R) -> BPEIterator<R> {
+        BPEIterator::new(self, reader)
+    }
+
+    /// Process a file in streaming fashion, writing tokens directly to output
+    fn encode_stream_to_file<R: BufRead, W: Write>(
+        &self,
+        mut reader: R,
+        mut writer: W,
+        show_progress: bool,
+    ) -> Result<(usize, usize), Box<dyn std::error::Error>> {
+        let mut total_chars = 0;
+        let mut total_tokens = 0;
+        let mut buffer = String::new();
+        let mut first_token = true;
+
+        loop {
+            buffer.clear();
+            let bytes_read = reader.read_line(&mut buffer)?;
+            if bytes_read == 0 {
+                break; // EOF
+            }
+
+            total_chars += buffer.len();
+
+            // Encode this line
+            let token_ids = self.encode(&buffer);
+            total_tokens += token_ids.len();
+
+            // Write tokens to output
+            for token_id in token_ids {
+                if !first_token {
+                    write!(writer, " ")?;
+                }
+                write!(writer, "{}", token_id)?;
+                first_token = false;
+            }
+
+            // Progress indicator for large files
+            if show_progress && total_tokens % 100000 == 0 {
+                println!("   • Processed {} tokens, {} chars...", total_tokens, total_chars);
+            }
+        }
+
+        Ok((total_chars, total_tokens))
+    }
 }
 
 /// Load a BPE tokenizer from vocab and merges files
@@ -232,7 +334,7 @@ fn load_tokenizer(
     Ok(BPETokenizer::new(vocab, merges, special_tokens.to_vec()))
 }
 
-/// Tokenize an entire file
+/// Tokenize an entire file using streaming to handle large files efficiently
 fn tokenize_file(
     tokenizer: &BPETokenizer,
     input_path: &str,
@@ -242,29 +344,77 @@ fn tokenize_file(
 ) -> Result<Vec<u16>, Box<dyn std::error::Error>> {
     println!("🔤 Tokenizing file: {}", input_path);
 
-    // Read input file
-    let text = std::fs::read_to_string(input_path)?;
     let start_time = Instant::now();
+    let input_file = File::open(input_path)?;
+    let reader = BufReader::new(input_file);
 
-    // Use the proper BPE tokenizer
-    let token_ids = tokenizer.encode(&text);
+    // For "ids" format with output file, use streaming to save memory
+    if let Some(output_path) = output_path {
+        if output_format == "ids" {
+            println!("   Using streaming tokenization to avoid memory issues...");
+            
+            let output_file = File::create(output_path)?;
+            let writer = BufWriter::new(output_file);
+            
+            let (total_chars, total_tokens) = tokenizer.encode_stream_to_file(reader, writer, show_stats)?;
+            let tokenization_time = start_time.elapsed();
 
-    let tokenization_time = start_time.elapsed();
+            if show_stats {
+                println!("📊 Tokenization stats:");
+                println!("   • Input characters: {}", total_chars);
+                println!("   • Output tokens: {}", total_tokens);
+                println!("   • Compression ratio: {:.2}x", total_chars as f64 / total_tokens as f64);
+                println!("   • Time: {:.3}s", tokenization_time.as_secs_f64());
+                println!("   • Speed: {:.1}K chars/sec", total_chars as f64 / tokenization_time.as_secs_f64() / 1000.0);
+            }
 
-    if show_stats {
-        println!("📊 Tokenization stats:");
-        println!("   • Input characters: {}", text.len());
-        println!("   • Output tokens: {}", token_ids.len());
-        println!("   • Compression ratio: {:.2}x", text.len() as f64 / token_ids.len() as f64);
-        println!("   • Time: {:.3}s", tokenization_time.as_secs_f64());
-        println!("   • Speed: {:.1}K chars/sec", text.len() as f64 / tokenization_time.as_secs_f64() / 1000.0);
+            println!("💾 Saved token IDs to {}", output_path);
+            return Ok(Vec::new()); // Don't keep tokens in memory for streaming case
+        }
     }
 
-    // Save output if path provided
+    // For other formats or when no output file, collect all tokens (fallback to old behavior)
+    println!("   Collecting tokens in memory for {} format...", output_format);
+    
+    let token_ids: Vec<u16> = if show_stats {
+        // Need to count characters for stats
+        let input_file_for_counting = File::open(input_path)?;
+        let mut counting_reader = BufReader::new(input_file_for_counting);
+        let mut char_count = 0;
+        let mut line_buffer = String::new();
+        
+        // Count characters
+        loop {
+            line_buffer.clear();
+            let bytes_read = counting_reader.read_line(&mut line_buffer)?;
+            if bytes_read == 0 {
+                break;
+            }
+            char_count += line_buffer.len();
+        }
+        
+        // Now tokenize with streaming
+        let token_ids: Vec<u16> = tokenizer.encode_iterable(reader).collect();
+        let tokenization_time = start_time.elapsed();
+
+        println!("📊 Tokenization stats:");
+        println!("   • Input characters: {}", char_count);
+        println!("   • Output tokens: {}", token_ids.len());
+        println!("   • Compression ratio: {:.2}x", char_count as f64 / token_ids.len() as f64);
+        println!("   • Time: {:.3}s", tokenization_time.as_secs_f64());
+        println!("   • Speed: {:.1}K chars/sec", char_count as f64 / tokenization_time.as_secs_f64() / 1000.0);
+        
+        token_ids
+    } else {
+        // Just tokenize without counting characters
+        tokenizer.encode_iterable(reader).collect()
+    };
+
+    // Save output if path provided (for non-ids formats)
     if let Some(output_path) = output_path {
         match output_format {
             "ids" => {
-                // Save as space-separated token IDs
+                // This case should have been handled above, but just in case
                 let ids_str = token_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(" ");
                 std::fs::write(output_path, ids_str)?;
                 println!("💾 Saved token IDs to {}", output_path);
