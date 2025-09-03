@@ -23,7 +23,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from transformers import (
+from .transformers import (
     TransformerLM,
     AdamWOptimizer,
     cross_entropy,
