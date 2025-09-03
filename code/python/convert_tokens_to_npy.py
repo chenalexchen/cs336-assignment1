@@ -79,9 +79,20 @@ def convert_tokens_to_npy(input_file: str, output_file: str):
 
 def main():
     """Convert both training and validation datasets."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Convert tokenized datasets to NumPy format")
+    parser.add_argument("--dataset", type=str, default="tiny_stories_10000", 
+                       help="Dataset directory name (default: tiny_stories_10000)")
+    parser.add_argument("--validation-only", action="store_true", 
+                       help="Only convert validation dataset")
+    parser.add_argument("--train-only", action="store_true", 
+                       help="Only convert training dataset")
+    
+    args = parser.parse_args()
     
     # Define paths
-    base_path = "training_data/tiny_stories_10000"
+    base_path = f"training_data/{args.dataset}"
     
     train_ids = f"{base_path}/train/tokens.ids"
     train_npy = f"{base_path}/train/tokens.npy"
@@ -89,25 +100,30 @@ def main():
     val_ids = f"{base_path}/validation/tokens.ids"
     val_npy = f"{base_path}/validation/tokens.npy"
     
-    print("🔄 Converting tokenized datasets to NumPy format")
+    print(f"🔄 Converting tokenized datasets to NumPy format")
+    print(f"Dataset: {args.dataset}")
     print("=" * 50)
     
     total_tokens = 0
     
-    # Convert validation dataset (already completed)
-    if os.path.exists(val_ids):
-        val_tokens = convert_tokens_to_npy(val_ids, val_npy)
-        total_tokens += val_tokens
-    else:
-        print(f"⚠️  Validation file not found: {val_ids}")
+    # Convert validation dataset
+    if not args.train_only:
+        if os.path.exists(val_ids):
+            print("Converting validation dataset...")
+            val_tokens = convert_tokens_to_npy(val_ids, val_npy)
+            total_tokens += val_tokens
+        else:
+            print(f"⚠️  Validation file not found: {val_ids}")
     
-    # Convert training dataset (when ready)
-    if os.path.exists(train_ids):
-        train_tokens = convert_tokens_to_npy(train_ids, train_npy)
-        total_tokens += train_tokens
-    else:
-        print(f"⚠️  Training file not found: {train_ids}")
-        print("   Waiting for tokenization to complete...")
+    # Convert training dataset
+    if not args.validation_only:
+        if os.path.exists(train_ids):
+            print("Converting training dataset...")
+            train_tokens = convert_tokens_to_npy(train_ids, train_npy)
+            total_tokens += train_tokens
+        else:
+            print(f"⚠️  Training file not found: {train_ids}")
+            print("   Waiting for tokenization to complete...")
     
     print("=" * 50)
     print(f"✅ Conversion complete! Total tokens: {total_tokens:,}")
