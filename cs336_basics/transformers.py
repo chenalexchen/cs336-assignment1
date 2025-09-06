@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.cuda.nvtx as nvtx
 import math
 from einops import einsum
 from jaxtyping import Float
@@ -214,6 +215,36 @@ def scaled_dot_product_attention(
     return output
 
 
+@nvtx.range("scaled dot product attention")
+def annotated_scaled_dot_product_attention(
+    Q: Float[torch.Tensor, " ... queries d_k"],
+    K: Float[torch.Tensor, " ... keys d_k"],
+    V: Float[torch.Tensor, " ... values d_v"],
+    mask: Float[torch.Tensor, " ... queries keys"] | None = None,
+) -> Float[torch.Tensor, " ... queries d_v"]:
+    with nvtx.range("computing attention scores"):
+        # Compute attention scores: Q @ K^T
+        scores = einsum(Q, K, "... queries d_k, ... keys d_k -> ... queries keys")
+        
+        # Scale by sqrt(d_k)
+        d_k = Q.shape[-1]
+        scores = scores / math.sqrt(d_k)
+        
+        # Apply mask if provided
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, float("-inf"))
+    
+    with nvtx.range("computing softmax"):
+        # Apply softmax to get attention weights
+        attn_weights = softmax(scores, dim=-1)
+    
+    with nvtx.range("final matmul"):
+        # Apply attention weights to values
+        output = einsum(attn_weights, V, "... queries keys, ... keys d_v -> ... queries d_v")
+    
+    return output
+
+
 class MultiHeadSelfAttention(nn.Module):
     def __init__(
         self,
@@ -222,6 +253,7 @@ class MultiHeadSelfAttention(nn.Module):
         max_seq_len: int = 2048,
         use_rope: bool = True,
         theta_base: float = 10000.0,
+        use_nvtx: bool = False,
         device: torch.device = None,
         dtype: torch.dtype = None,
     ):
@@ -243,6 +275,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = d_model // num_heads
         self.use_rope = use_rope
+        self.use_nvtx = use_nvtx
 
         # Use concatenated weight matrices for efficiency (as expected by tests)
         # Shape: [num_heads * head_dim, d_model] = [d_model, d_model]
@@ -319,7 +352,10 @@ class MultiHeadSelfAttention(nn.Module):
             mask = self.causal_mask[:seq_len, :seq_len]
 
         # Compute scaled dot-product attention
-        output = scaled_dot_product_attention(Q, K, V, mask)
+        if self.use_nvtx:
+            output = annotated_scaled_dot_product_attention(Q, K, V, mask)
+        else:
+            output = scaled_dot_product_attention(Q, K, V, mask)
 
         # Reshape back to [batch, seq_len, d_model]
         output = output.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
@@ -331,9 +367,9 @@ class MultiHeadSelfAttention(nn.Module):
 
 
 class Transformer(nn.Module):
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float, use_norm: bool = True, use_rope: bool = True, pre_norm: bool = True, use_swiglu: bool = True):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, max_seq_len: int, theta: float, use_norm: bool = True, use_rope: bool = True, pre_norm: bool = True, use_swiglu: bool = True, use_nvtx: bool = False):
         super().__init__()
-        self.attention = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, use_rope=use_rope, theta_base=theta)
+        self.attention = MultiHeadSelfAttention(d_model, num_heads, max_seq_len, use_rope=use_rope, theta_base=theta, use_nvtx=use_nvtx)
         
         # Conditionally create SwiGLU or standard SiLU feed-forward network
         if use_swiglu:
@@ -378,10 +414,11 @@ class TransformerLM(nn.Module):
         use_rope: bool = True,
         pre_norm: bool = True,
         use_swiglu: bool = True,
+        use_nvtx: bool = False,
     ):
         super().__init__()
         self.transformers = nn.ModuleList(
-            [Transformer(d_model, num_heads, d_ff, max_seq_len=context_length, theta=theta, use_norm=use_norm, use_rope=use_rope, pre_norm=pre_norm, use_swiglu=use_swiglu) for i in range(num_layers)]
+            [Transformer(d_model, num_heads, d_ff, max_seq_len=context_length, theta=theta, use_norm=use_norm, use_rope=use_rope, pre_norm=pre_norm, use_swiglu=use_swiglu, use_nvtx=use_nvtx) for i in range(num_layers)]
         )
         self.token_emb = Embedding(vocab_size, d_model)
         self.use_norm = use_norm
